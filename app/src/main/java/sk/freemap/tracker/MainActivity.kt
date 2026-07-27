@@ -21,12 +21,21 @@ import android.widget.Toast
  * Deliberately bare: recording state, a start/stop button, and a live point count.
  * Permissions are asked for inline, right when Start is pressed — the real first-run flow
  * comes later.
+ *
+ * Also the landing point for `freemap-recorder://` links, which let a page start a recording
+ * without the user ever looking at this screen.
  */
 class MainActivity : Activity() {
 
     private lateinit var stateView: TextView
     private lateinit var countView: TextView
     private lateinit var toggle: Button
+
+    /** Set by a `start` link: get out of the way as soon as the recording is actually running. */
+    private var returnAfterStart = false
+
+    /** Whether this task exists only because a link opened it — decides finish vs. move-to-back. */
+    private var openedByLink = false
 
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
@@ -45,6 +54,9 @@ class MainActivity : Activity() {
         toggle = findViewById(R.id.toggle)
 
         toggle.setOnClickListener {
+            // Pressing the button is a decision to be here, so drop any pending link hand-back —
+            // e.g. from a link whose permission chain the user abandoned earlier.
+            returnAfterStart = false
             if (TrackerState.recording) TrackingService.stop(this) else requestPermissionsThenStart()
         }
 
@@ -52,6 +64,16 @@ class MainActivity : Activity() {
         if (!TrackerState.recording) {
             Thread { TrackerState.pointCount = PointStore.get(this).count() }.start()
         }
+
+        openedByLink = savedInstanceState == null && intent?.data != null
+        handleLink(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // singleTask: a link arriving while the app is already up is delivered here, not to onCreate.
+        setIntent(intent)
+        handleLink(intent)
     }
 
     override fun onResume() {
@@ -69,6 +91,40 @@ class MainActivity : Activity() {
         stateView.setText(if (recording) R.string.state_recording else R.string.state_idle)
         countView.text = getString(R.string.points_fmt, TrackerState.pointCount)
         toggle.setText(if (recording) R.string.stop else R.string.start)
+    }
+
+    // --- links -------------------------------------------------------------------------------
+
+    /**
+     * `freemap-recorder://start` starts recording and hands focus straight back to the browser;
+     * any other authority just opens the app. An optional `?port=` is echoed by `GET /status`.
+     *
+     * A link makes the app foreground, so the foreground-service start is always permitted here —
+     * unlike `POST /start`, which needs the battery-optimisation exemption.
+     */
+    private fun handleLink(intent: Intent?) {
+        val uri = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.data ?: return
+        if (uri.scheme != LINK_SCHEME) return
+
+        uri.getQueryParameter("port")?.toIntOrNull()?.let {
+            TrackerState.portEcho = it
+            if (it != TrackerApi.PORT) Log.w(TAG, "link asked for port $it, serving ${TrackerApi.PORT}")
+        }
+
+        if (uri.host != LINK_START) return
+        returnAfterStart = true
+        // Already recording: nothing to do but get out of the way.
+        if (TrackerState.recording) dismiss() else requestPermissionsThenStart()
+    }
+
+    /**
+     * Hands focus back to whoever opened the link. Finishing is right when the link created this
+     * task; when the app was already open behind the browser, moving the task back returns focus
+     * without tearing down the screen the user left behind.
+     */
+    private fun dismiss() {
+        returnAfterStart = false
+        if (openedByLink && isTaskRoot) finish() else moveTaskToBack(true)
     }
 
     // --- permissions -------------------------------------------------------------------------
@@ -115,7 +171,9 @@ class MainActivity : Activity() {
      */
     private fun requestExemptionThenStart() {
         val power = getSystemService(PowerManager::class.java)
-        if (!power.isIgnoringBatteryOptimizations(packageName)) {
+        // A link start is already in the foreground and so needs no exemption; interrupting it with
+        // a system dialog would defeat the point of handing focus straight back to the browser.
+        if (!returnAfterStart && !power.isIgnoringBatteryOptimizations(packageName)) {
             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
                 .setData(Uri.parse("package:$packageName"))
             try {
@@ -128,14 +186,19 @@ class MainActivity : Activity() {
                 Log.w(TAG, "no battery optimisation settings screen on this device", e)
             }
         }
+        startRecording()
+    }
+
+    private fun startRecording() {
         TrackingService.start(this)
+        if (returnAfterStart) dismiss()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         // The exemption dialog always reports RESULT_CANCELED, so there is nothing to inspect —
         // and either answer leads to the same place.
-        if (requestCode == REQ_EXEMPTION) TrackingService.start(this)
+        if (requestCode == REQ_EXEMPTION) startRecording()
     }
 
     override fun onRequestPermissionsResult(
@@ -181,5 +244,9 @@ class MainActivity : Activity() {
         private const val REQ_BACKGROUND = 2
         private const val REQ_EXEMPTION = 3
         private const val REFRESH_MS = 500L
+
+        /** Declared in the manifest's BROWSABLE intent filter. */
+        private const val LINK_SCHEME = "freemap-recorder"
+        private const val LINK_START = "start"
     }
 }

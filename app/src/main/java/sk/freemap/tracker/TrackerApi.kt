@@ -125,6 +125,7 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
         sb.append(",\"lastSeq\":").append(store.maxSeq())
         sb.append(",\"count\":").append(store.count())
         sb.append(",\"port\":").append(PORT)
+        sb.append(",\"portEcho\":").append(TrackerState.portEcho)
         sb.append(",\"permissions\":{\"fine\":").append(granted(Manifest.permission.ACCESS_FINE_LOCATION))
         sb.append(",\"background\":").append(
             Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||

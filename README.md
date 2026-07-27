@@ -50,7 +50,7 @@ has to be answerable before anything is being recorded.
 | `GET /stream` | Server-Sent Events tail, one event per fix, `id:` set to the point's `seq` |
 | `POST /start` | start recording; returns the status object |
 | `POST /stop` | stop recording; returns the status object |
-| `GET /status` | recording state, `lastSeq`, point count, permissions, battery-optimisation exemption |
+| `GET /status` | recording state, `lastSeq`, point count, `port`/`portEcho`, permissions, battery-optimisation exemption |
 
 Points are encoded positionally to keep long tracks small:
 
@@ -78,6 +78,41 @@ curl 'http://127.0.0.1:8378/track?since=0'
 curl -N http://127.0.0.1:8378/stream
 curl -X POST http://127.0.0.1:8378/start
 ```
+
+## Launching from the web
+
+A page can link straight into the recorder with the `freemap-recorder://` scheme:
+
+| link | what happens |
+| --- | --- |
+| `freemap-recorder://start` | starts recording and immediately hands focus back to the browser |
+| anything else, e.g. `freemap-recorder://open` | just opens the app |
+
+`start` is the useful one: the Activity fires up the foreground service and then gets out of the
+way — it finishes when the link created the task, and moves the task to the back when the app was
+already open, so the screen the user left behind survives. Either way focus returns to the browser
+instead of leaving them looking at the native UI. If permissions are still missing the app stays up
+long enough to ask for them, and hands back once recording actually starts.
+
+This is also the way to start recording that always works. `POST /start` needs the
+battery-optimisation exemption below, because it is a background start; a link makes the app
+foreground, so the foreground-service start is permitted with no exemption and no extra dialog —
+the exemption prompt is deliberately skipped on this path so nothing interrupts the hand-back.
+
+An optional `?port=` is echoed back as `portEcho` in `GET /status`, alongside the authoritative
+`port`. Send the port you intend to talk to, then read `/status` on it: getting your own value back
+confirms that the app answering there is the one the link just launched, and not something else
+bound to that port. A mismatch with `port` means the page and the app disagree — trust `port`.
+
+```js
+location.href = 'freemap-recorder://start?port=8378'
+// then, on return to the page:
+const s = await (await fetch('http://127.0.0.1:8378/status')).json()
+// s.recording === true, s.portEcho === 8378
+```
+
+Nothing tells the page whether the app is installed — the link silently does nothing if it is not,
+so treat a `/status` that never answers as "not installed".
 
 ### Battery-optimisation exemption
 
@@ -130,3 +165,10 @@ The HTTP API was verified on the same device, with the app backgrounded througho
 - reconnecting with `Last-Event-ID: 595` replayed 596–610 in a burst and then continued live from
   611, with no gap or duplicate at the handover
 - with nothing recording, `: ping` heartbeats arrive every 15 s
+
+`freemap-recorder://start` was verified on the same device with Firefox as the default browser, on a
+cold process and with the app already open, and with the battery-optimisation exemption *removed*:
+recording started in both cases and the browser was the resumed activity again within seconds, with
+no dialog in between. When the app was already open its task survived the hand-back; when the link
+had created the task, no activity was left behind. `?port=` came back as `portEcho`, and a
+mismatched port was logged rather than acted on.

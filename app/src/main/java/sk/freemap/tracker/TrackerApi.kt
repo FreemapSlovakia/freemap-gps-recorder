@@ -1,10 +1,6 @@
 package sk.freemap.tracker
 
-import android.Manifest
 import android.content.Context
-import android.content.pm.PackageManager
-import android.os.Build
-import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import fi.iki.elonen.NanoHTTPD
@@ -92,8 +88,10 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
     }
 
     private fun startRecording(): Response {
-        if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
-            return json(Response.Status.FORBIDDEN, statusJson("location permission not granted"))
+        // Same gate as the Start button: no location means nothing to record, and no notification
+        // permission means a recording nobody can see is running. `canRecord` in the body says so.
+        if (!Setup.canRecord(app)) {
+            return json(Response.Status.FORBIDDEN, statusJson("setup incomplete"))
         }
         if (!TrackerState.recording) {
             try {
@@ -119,23 +117,29 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
 
     // --- responses ---------------------------------------------------------------------------
 
+    /**
+     * Everything the setup screen shows, so a page can say "the recorder needs setup" instead of
+     * watching `POST /start` fail for reasons it cannot name. `canRecord` is the hard gate;
+     * `setupComplete` additionally covers the items that only make a long recording survive.
+     */
     private fun statusJson(error: String? = null): String {
-        val sb = StringBuilder(256)
+        val vendor = Vendor.current
+        val sb = StringBuilder(320)
         sb.append("{\"recording\":").append(TrackerState.recording)
         sb.append(",\"lastSeq\":").append(store.maxSeq())
         sb.append(",\"count\":").append(store.count())
         sb.append(",\"port\":").append(PORT)
         sb.append(",\"portEcho\":").append(TrackerState.portEcho)
-        sb.append(",\"permissions\":{\"fine\":").append(granted(Manifest.permission.ACCESS_FINE_LOCATION))
-        sb.append(",\"background\":").append(
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
-                granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-        )
-        sb.append(",\"notifications\":").append(
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-                granted(Manifest.permission.POST_NOTIFICATIONS)
-        )
-        sb.append("},\"batteryExempt\":").append(batteryExempt())
+        sb.append(",\"permissions\":{\"fine\":").append(Setup.fine(app))
+        sb.append(",\"background\":").append(Setup.background(app))
+        sb.append(",\"notifications\":").append(Setup.notifications(app))
+        sb.append("},\"batteryExempt\":").append(Setup.batteryExempt(app))
+        sb.append(",\"oem\":{\"vendor\":")
+            .append(if (vendor == null) "null" else "\"${vendor.name.lowercase()}\"")
+        sb.append(",\"needed\":").append(vendor != null)
+        sb.append(",\"acknowledged\":").append(Setup.oemAcknowledged(app))
+        sb.append("},\"canRecord\":").append(Setup.canRecord(app))
+        sb.append(",\"setupComplete\":").append(Setup.complete(app))
         if (error != null) {
             sb.append(",\"error\":\"").append(error.replace("\\", "\\\\").replace("\"", "\\\"")).append('"')
         }
@@ -167,13 +171,6 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
 
     private fun longParam(session: IHTTPSession, name: String): Long? =
         session.parameters[name]?.firstOrNull()?.toLongOrNull()
-
-    private fun granted(permission: String) =
-        app.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
-
-    private fun batteryExempt(): Boolean =
-        (app.getSystemService(Context.POWER_SERVICE) as PowerManager)
-            .isIgnoringBatteryOptimizations(app.packageName)
 
     /** Service start/stop is asynchronous; wait briefly so the response reports the settled state. */
     private fun awaitRecording(target: Boolean) {

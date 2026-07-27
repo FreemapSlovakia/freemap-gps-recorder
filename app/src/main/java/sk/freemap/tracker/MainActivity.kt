@@ -2,7 +2,8 @@ package sk.freemap.tracker
 
 import android.Manifest
 import android.app.Activity
-import android.content.ActivityNotFoundException
+import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -10,26 +11,37 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import android.view.View
 import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 
 /**
- * Deliberately bare: recording state, a start/stop button, and a live point count.
- * Permissions are asked for inline, right when Start is pressed — the real first-run flow
- * comes later.
+ * Recording state, a start/stop button, a live point count — and, until everything a recording needs
+ * is in place, a setup checklist under them.
  *
- * Also the landing point for `freemap-recorder://` links, which let a page start a recording
- * without the user ever looking at this screen.
+ * The checklist is re-read on every resume rather than only after a prompt, because half of these
+ * items can only be resolved by walking off into the system settings and coming back.
+ *
+ * Also the landing point for `freemap-recorder://` links, which let a page start a recording without
+ * the user ever looking at this screen.
  */
 class MainActivity : Activity() {
 
     private lateinit var stateView: TextView
     private lateinit var countView: TextView
     private lateinit var toggle: Button
+    private lateinit var warning: TextView
+    private lateinit var setupHeading: TextView
+    private lateinit var setupList: LinearLayout
+
+    private val rows = mutableListOf<Row>()
+
+    /** Kept in step by [renderSetup], so the 2 Hz ticker does not re-check permissions forever. */
+    private var canRecord = false
 
     /** Set by a `start` link: get out of the way as soon as the recording is actually running. */
     private var returnAfterStart = false
@@ -52,13 +64,18 @@ class MainActivity : Activity() {
         stateView = findViewById(R.id.state)
         countView = findViewById(R.id.count)
         toggle = findViewById(R.id.toggle)
+        warning = findViewById(R.id.warning)
+        setupHeading = findViewById(R.id.setup_heading)
+        setupList = findViewById(R.id.setup)
 
         toggle.setOnClickListener {
             // Pressing the button is a decision to be here, so drop any pending link hand-back —
-            // e.g. from a link whose permission chain the user abandoned earlier.
+            // e.g. from a link whose setup the user abandoned earlier and only finished now.
             returnAfterStart = false
-            if (TrackerState.recording) TrackingService.stop(this) else requestPermissionsThenStart()
+            if (TrackerState.recording) TrackingService.stop(this) else startRecording()
         }
+
+        buildSetupRows()
 
         // Cold start with nothing recording: show what is already on disk.
         if (!TrackerState.recording) {
@@ -78,7 +95,11 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        renderSetup()
         handler.post(ticker)
+        // A link that arrived before the app was able to record is fulfilled the moment it can be —
+        // which is usually right here, on the way back from a permission prompt or settings screen.
+        if (returnAfterStart && !TrackerState.recording && canRecord) startRecording()
     }
 
     override fun onPause() {
@@ -91,6 +112,245 @@ class MainActivity : Activity() {
         stateView.setText(if (recording) R.string.state_recording else R.string.state_idle)
         countView.text = getString(R.string.points_fmt, TrackerState.pointCount)
         toggle.setText(if (recording) R.string.stop else R.string.start)
+        // Stopping must always be possible, even if a permission was revoked mid-recording.
+        toggle.isEnabled = recording || canRecord
+    }
+
+    // --- setup checklist ---------------------------------------------------------------------
+
+    /** One checklist item and the views showing it. Order of declaration is order of asking. */
+    private enum class Item(val title: Int, val detail: Int, val action: Int, val required: Boolean) {
+
+        FINE(R.string.item_fine, R.string.item_fine_detail, R.string.act_grant, true),
+
+        BACKGROUND(
+            R.string.item_background, R.string.item_background_detail, R.string.act_allow, false,
+        ),
+
+        NOTIFICATIONS(
+            R.string.item_notifications, R.string.item_notifications_detail, R.string.act_grant, true,
+        ),
+
+        BATTERY(R.string.item_battery, R.string.item_battery_detail, R.string.act_allow, false),
+
+        OEM(R.string.item_oem, R.string.item_oem_detail, R.string.act_how, false),
+
+        ;
+
+        fun applies() = this != OEM || Vendor.current != null
+
+        fun satisfied(context: Context) = when (this) {
+            FINE -> Setup.fine(context)
+            BACKGROUND -> Setup.background(context)
+            NOTIFICATIONS -> Setup.notifications(context)
+            BATTERY -> Setup.batteryExempt(context)
+            OEM -> Setup.oemAcknowledged(context)
+        }
+
+        /** Background location is the one item Android refuses to hand out on its own. */
+        fun blocked(context: Context) = this == BACKGROUND && !Setup.fine(context)
+    }
+
+    private class Row(
+        val item: Item,
+        val mark: TextView,
+        val title: TextView,
+        val detail: TextView,
+        val action: Button,
+    )
+
+    private fun buildSetupRows() {
+        for (item in Item.values()) {
+            if (!item.applies()) continue
+            val view = layoutInflater.inflate(R.layout.setup_item, setupList, false)
+            val row = Row(
+                item,
+                view.findViewById(R.id.mark),
+                view.findViewById(R.id.title),
+                view.findViewById(R.id.detail),
+                view.findViewById(R.id.action),
+            )
+            row.action.setText(item.action)
+            row.action.setOnClickListener { resolve(item) }
+            setupList.addView(view)
+            rows += row
+        }
+    }
+
+    /**
+     * Reads the live state of every item straight from the platform. Called on every resume, since
+     * most of these are granted in Settings, outside this app, with no callback back to here.
+     */
+    private fun renderSetup() {
+        canRecord = Setup.canRecord(this)
+        val complete = Setup.complete(this)
+
+        for (row in rows) {
+            val satisfied = row.item.satisfied(this)
+            val blocked = !satisfied && row.item.blocked(this)
+
+            row.mark.setText(
+                when {
+                    satisfied -> R.string.mark_ok
+                    row.item.required -> R.string.mark_missing
+                    else -> R.string.mark_optional
+                }
+            )
+            row.mark.setTextColor(
+                getColor(
+                    when {
+                        satisfied -> R.color.ok
+                        row.item.required -> R.color.missing
+                        else -> R.color.warn
+                    }
+                )
+            )
+            // Only the OEM strings carry a placeholder; the rest ignore the extra argument.
+            row.title.text = getString(row.item.title, vendorName)
+            row.detail.text =
+                if (blocked) getString(R.string.item_background_blocked)
+                else getString(row.item.detail, vendorName)
+
+            // INVISIBLE rather than GONE, so resolving an item does not make the list jump about.
+            row.action.visibility = if (satisfied) View.INVISIBLE else View.VISIBLE
+            row.action.isEnabled = !blocked
+        }
+
+        val checklist = if (complete) View.GONE else View.VISIBLE
+        setupHeading.visibility = checklist
+        setupList.visibility = checklist
+        // The checklist says what is missing; the banner says why it matters. It is only worth
+        // saying once recording is possible at all — before that, the missing items speak for
+        // themselves.
+        warning.visibility = if (!complete && canRecord) View.VISIBLE else View.GONE
+    }
+
+    private val vendorName: String by lazy {
+        Vendor.current?.let { getString(it.label) }.orEmpty()
+    }
+
+    // --- resolving items -----------------------------------------------------------------------
+
+    private fun resolve(item: Item) {
+        when (item) {
+            // Prominent disclosure: say what is collected, and that it happens in the background,
+            // before the system dialog appears.
+            Item.FINE -> confirm(R.string.rationale_title, R.string.rationale_msg, R.string.rationale_continue) {
+                requestPermissions(
+                    arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                    ),
+                    REQ_FINE,
+                )
+            }
+
+            Item.BACKGROUND -> resolveBackground()
+
+            Item.NOTIFICATIONS -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
+            }
+
+            Item.BATTERY -> confirm(R.string.battery_title, R.string.battery_msg, R.string.act_allow) {
+                requestExemption()
+            }
+
+            Item.OEM -> showVendorHelp()
+        }
+    }
+
+    /**
+     * On Android 11+ the system shows no dialog for background location at all — the request is
+     * dropped on the floor — so the only way through is the app's own settings screen.
+     */
+    private fun resolveBackground() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQ_BACKGROUND)
+            return
+        }
+        confirm(R.string.background_title, R.string.background_msg, R.string.open_settings) {
+            openAppSettings()
+        }
+    }
+
+    private fun requestExemption() {
+        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+            .setData(Uri.parse("package:$packageName"))
+        try {
+            // Deliberately not resolveActivity() first — package-visibility filtering can hide the
+            // handler from us on Android 11+, so the exception is the reliable signal.
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "no battery optimisation screen on this device", e)
+            openAppSettings()
+        }
+    }
+
+    /**
+     * The one item nothing can verify: no API reports a vendor's autostart state, so the guidance is
+     * shown and the user says when it is done.
+     */
+    private fun showVendorHelp() {
+        val vendor = Vendor.current ?: return
+        AlertDialog.Builder(this)
+            .setTitle(vendor.label)
+            .setMessage(vendor.guidance)
+            .setPositiveButton(R.string.oem_done) { _, _ ->
+                Setup.acknowledgeOem(this, true)
+                renderSetup()
+            }
+            .setNeutralButton(R.string.oem_open) { _, _ ->
+                if (!vendor.openSettings(this)) toast(R.string.oem_no_screen)
+            }
+            .setNegativeButton(R.string.later, null)
+            .show()
+    }
+
+    private fun confirm(title: Int, message: Int, positive: Int, action: () -> Unit) {
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(message)
+            .setPositiveButton(positive) { _, _ -> action() }
+            .setNegativeButton(R.string.later, null)
+            .show()
+    }
+
+    private fun openAppSettings() {
+        try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", packageName, null),
+                )
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "no app settings screen on this device", e)
+            toast(R.string.no_settings_screen)
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        val permission = when (requestCode) {
+            REQ_FINE -> Manifest.permission.ACCESS_FINE_LOCATION
+            REQ_BACKGROUND -> Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            REQ_NOTIFICATIONS -> Manifest.permission.POST_NOTIFICATIONS
+            else -> return
+        }
+
+        // A denial the system will no longer let us ask about is final, and asking again does
+        // nothing visible at all — so hand the user to the screen that can still change it.
+        val denied = checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED
+        if (denied && !shouldShowRequestPermissionRationale(permission)) {
+            toast(R.string.denied_permanently)
+            openAppSettings()
+        }
+        renderSetup()
     }
 
     // --- links -------------------------------------------------------------------------------
@@ -113,8 +373,19 @@ class MainActivity : Activity() {
 
         if (uri.host != LINK_START) return
         returnAfterStart = true
-        // Already recording: nothing to do but get out of the way.
-        if (TrackerState.recording) dismiss() else requestPermissionsThenStart()
+        when {
+            // Already recording: nothing to do but get out of the way.
+            TrackerState.recording -> dismiss()
+            Setup.canRecord(this) -> startRecording()
+            // Setup is unfinished, so the link cannot be honoured yet. Open the first thing standing
+            // in the way rather than leaving the user to work out which row to press.
+            else -> Item.values().first { it.required && !it.satisfied(this) }.let { resolve(it) }
+        }
+    }
+
+    private fun startRecording() {
+        TrackingService.start(this)
+        if (returnAfterStart) dismiss()
     }
 
     /**
@@ -127,122 +398,13 @@ class MainActivity : Activity() {
         if (openedByLink && isTaskRoot) finish() else moveTaskToBack(true)
     }
 
-    // --- permissions -------------------------------------------------------------------------
-
-    private fun requestPermissionsThenStart() {
-        val wanted = buildList {
-            if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
-                add(Manifest.permission.ACCESS_FINE_LOCATION)
-                add(Manifest.permission.ACCESS_COARSE_LOCATION)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                !granted(Manifest.permission.POST_NOTIFICATIONS)
-            ) {
-                add(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }
-
-        if (wanted.isNotEmpty()) {
-            requestPermissions(wanted.toTypedArray(), REQ_FOREGROUND)
-            return
-        }
-        requestBackgroundThenStart()
-    }
-
-    /**
-     * Background location has to be asked for on its own, after foreground location is already
-     * held — the system silently drops a combined request.
-     */
-    private fun requestBackgroundThenStart() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-            !granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-        ) {
-            toast(R.string.need_background)
-            requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQ_BACKGROUND)
-            return
-        }
-        requestExemptionThenStart()
-    }
-
-    /**
-     * Not needed to record, but Android 12+ refuses to let a backgrounded app start a foreground
-     * service unless it is exempt from battery optimisation — which is what `POST /start` on the
-     * local API does. Declining is fine; only remote start is lost.
-     */
-    private fun requestExemptionThenStart() {
-        val power = getSystemService(PowerManager::class.java)
-        // A link start is already in the foreground and so needs no exemption; interrupting it with
-        // a system dialog would defeat the point of handing focus straight back to the browser.
-        if (!returnAfterStart && !power.isIgnoringBatteryOptimizations(packageName)) {
-            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                .setData(Uri.parse("package:$packageName"))
-            try {
-                // Deliberately not resolveActivity() first — package-visibility filtering can hide
-                // the handler from us on Android 11+, so the exception is the reliable signal.
-                toast(R.string.need_exemption)
-                startActivityForResult(intent, REQ_EXEMPTION)
-                return
-            } catch (e: ActivityNotFoundException) {
-                Log.w(TAG, "no battery optimisation settings screen on this device", e)
-            }
-        }
-        startRecording()
-    }
-
-    private fun startRecording() {
-        TrackingService.start(this)
-        if (returnAfterStart) dismiss()
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        // The exemption dialog always reports RESULT_CANCELED, so there is nothing to inspect —
-        // and either answer leads to the same place.
-        if (requestCode == REQ_EXEMPTION) startRecording()
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-
-        when (requestCode) {
-            REQ_FOREGROUND -> {
-                if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
-                    toast(R.string.need_location)
-                    return
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                    !granted(Manifest.permission.POST_NOTIFICATIONS)
-                ) {
-                    toast(R.string.notifications_denied)
-                }
-                requestBackgroundThenStart()
-            }
-
-            REQ_BACKGROUND -> {
-                // Recording still works while the service is in the foreground state, so start
-                // either way and just say what was given up.
-                if (!granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION)) {
-                    toast(R.string.background_denied)
-                }
-                requestExemptionThenStart()
-            }
-        }
-    }
-
-    private fun granted(permission: String) =
-        checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
-
     private fun toast(res: Int) = Toast.makeText(this, res, Toast.LENGTH_LONG).show()
 
     companion object {
         private const val TAG = "MainActivity"
-        private const val REQ_FOREGROUND = 1
+        private const val REQ_FINE = 1
         private const val REQ_BACKGROUND = 2
-        private const val REQ_EXEMPTION = 3
+        private const val REQ_NOTIFICATIONS = 3
         private const val REFRESH_MS = 500L
 
         /** Declared in the manifest's BROWSABLE intent filter. */

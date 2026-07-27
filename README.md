@@ -3,8 +3,8 @@
 Android GPS track recorder. Records a high-accuracy location stream from a foreground service and
 appends every fix to on-disk SQLite, so recording survives backgrounding and screen lock.
 
-This is an early skeleton: the UI is deliberately just recording state, a start/stop button and a
-live point count. The first-run UX, track management and upload come later.
+This is an early skeleton: the UI is recording state, a start/stop button, a live point count and a
+setup checklist. Track management and upload come later.
 
 ## Requirements
 
@@ -30,11 +30,43 @@ it, delivery becomes unreliable once the screen goes off.
 Fixes are delivered onto a dedicated `HandlerThread`, so SQLite writes never touch the main thread.
 `PointStore` appends each one through a single reused compiled statement.
 
-Permissions are requested inline when Start is pressed: fine + coarse location (plus
-`POST_NOTIFICATIONS` on Android 13+) in one request, then background location as a **separate**
-follow-up — the system silently drops a background-location request that is bundled with the
-foreground ones. Denying background location still starts recording, since a foreground service
-started from the foreground does not require it.
+## Setup
+
+Recording in the background is not one permission but five separate concessions, three of which
+Android will not even prompt for. The Activity therefore shows a checklist of them, each with its
+live state and a button that opens whatever screen can resolve it. It is re-read on every resume,
+because most of them are granted in Settings — outside the app, with nothing to call back.
+
+| item | how it is resolved | blocking? |
+| --- | --- | --- |
+| Location access | prominent-disclosure screen, then the system prompt for fine + coarse | **yes** |
+| Background location | Android 11+ shows no prompt at all, so it is app settings → Permissions → Location → *Allow all the time* | no |
+| Notifications | system prompt on Android 13+; implicit before that | **yes** |
+| Unrestricted battery use | plain-language explanation, then `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | no |
+| Vendor app restrictions | vendor-specific guidance, plus a shortcut to that vendor's own screen | no |
+
+Start is blocked until location and notifications are granted — without the first there is nothing
+to record, and without the second a recording would run with no visible sign of it, which is the one
+thing a foreground service exists to prevent. `POST /start` refuses the same two with `403` and
+`"error":"setup incomplete"`.
+
+The rest only make a recording *survive*, so they never block anything; while any of them is
+outstanding a banner says as much and the checklist stays on screen. Once everything is resolved
+both disappear and the screen is just state, count and button again.
+
+The order in the table is the order the items can be asked in: Android silently drops a
+background-location request that is bundled with, or precedes, the foreground one, so the background
+row stays disabled until location is granted.
+
+### Vendor app restrictions
+
+Xiaomi, Huawei, Samsung, Oppo, Vivo and OnePlus kill background apps on terms of their own, well
+beyond anything the platform does, and no API reports whether they have been told not to. The
+checklist detects the manufacturer, shows what to change, and offers a shortcut to the vendor's own
+settings screen. Those components are undocumented and move between ROM versions, so each vendor has
+several candidates tried in turn and every launch is wrapped — a miss falls back to the text, which
+is the real answer anyway. The row is the user's word that it is done, kept in `SharedPreferences`,
+and it is only shown at all on those manufacturers.
 
 ## Local HTTP API
 
@@ -50,7 +82,7 @@ has to be answerable before anything is being recorded.
 | `GET /stream` | Server-Sent Events tail, one event per fix, `id:` set to the point's `seq` |
 | `POST /start` | start recording; returns the status object |
 | `POST /stop` | stop recording; returns the status object |
-| `GET /status` | recording state, `lastSeq`, point count, `port`/`portEcho`, permissions, battery-optimisation exemption |
+| `GET /status` | recording state, `lastSeq`, point count, `port`/`portEcho`, and the whole [setup](#setup) state |
 
 Points are encoded positionally to keep long tracks small:
 
@@ -61,6 +93,21 @@ Points are encoded positionally to keep long tracks small:
 
 Coordinates are rounded to 7 decimals and metre-scale values to 2 — past that it is float noise, and
 over a long track those digits add up. Absent fields are `null`, never `0`.
+
+`/status` reports every checklist item, so a page can say "the recorder needs setup" instead of
+watching `POST /start` fail for reasons it cannot name:
+
+```json
+{"recording":false,"lastSeq":24,"count":24,"port":8378,"portEcho":null,
+ "permissions":{"fine":true,"background":true,"notifications":false},
+ "batteryExempt":true,
+ "oem":{"vendor":"xiaomi","needed":true,"acknowledged":false},
+ "canRecord":false,"setupComplete":false}
+```
+
+`canRecord` is the hard gate — the same one the Start button uses. `setupComplete` additionally
+covers the items that only make a long recording survive. `oem.needed` is false on manufacturers
+that leave background apps alone, and `oem.vendor` is then `null`.
 
 `/stream` honours `Last-Event-ID` on reconnect: it replays the points after that id, then continues
 live. The subscription is registered *before* the replay query runs, so a fix recorded during the
@@ -91,8 +138,9 @@ A page can link straight into the recorder with the `freemap-recorder://` scheme
 `start` is the useful one: the Activity fires up the foreground service and then gets out of the
 way — it finishes when the link created the task, and moves the task to the back when the app was
 already open, so the screen the user left behind survives. Either way focus returns to the browser
-instead of leaving them looking at the native UI. If permissions are still missing the app stays up
-long enough to ask for them, and hands back once recording actually starts.
+instead of leaving them looking at the native UI. If the app is not able to record yet it stays up
+with the [checklist](#setup) instead, opens the first thing standing in the way, and hands back the
+moment recording actually starts — which may be several prompts later.
 
 This is also the way to start recording that always works. `POST /start` needs the
 battery-optimisation exemption below, because it is a background start; a link makes the app
@@ -119,8 +167,8 @@ so treat a `/status` that never answers as "not installed".
 `POST /start` while the app is backgrounded needs the app to be exempt from battery optimisation —
 without it Android 12+ rejects the foreground-service start with
 `ForegroundServiceStartNotAllowedException`, which the endpoint reports as a `409` with the exception
-name in `error`. The app asks for the exemption once, after the location permissions; declining
-costs only remote start, not recording. `/status` reports the current state as `batteryExempt`.
+name in `error`. Declining the exemption costs only remote start, not recording, which is why it is
+a non-blocking [checklist](#setup) item; `/status` reports it as `batteryExempt`.
 
 ## Storage
 

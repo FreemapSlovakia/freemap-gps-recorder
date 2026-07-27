@@ -13,9 +13,74 @@
     <string name="notif_title">Recording track</string>
     <string name="notif_text">%1$d points</string>
 
-    <string name="need_location">Location permission is required to record.</string>
-    <string name="need_background">For recording to survive backgrounding, choose "Allow all the time".</string>
-    <string name="background_denied">Background location denied — recording may stop when the app is backgrounded.</string>
-    <string name="notifications_denied">Notifications denied — the recording notification will be hidden.</string>
-    <string name="need_exemption">Allow unrestricted battery use, so recording can be started remotely.</string>
+    <!-- Setup checklist -->
+
+    <string name="setup_heading">Setup</string>
+    <string name="warn_incomplete">Setup is unfinished, so a recording may be cut short without warning. You can still record.</string>
+
+    <string name="mark_ok">✓</string>
+    <string name="mark_missing">✗</string>
+    <string name="mark_optional">!</string>
+
+    <string name="act_grant">Grant</string>
+    <string name="act_allow">Allow</string>
+    <string name="act_how">How</string>
+
+    <string name="item_fine">Location access</string>
+    <string name="item_fine_detail">Required — a track is nothing but a stream of location fixes.</string>
+
+    <string name="item_background">Background location</string>
+    <string name="item_background_detail">Lets recording carry on once the app leaves the screen.</string>
+    <string name="item_background_blocked">Grant location access first.</string>
+
+    <string name="item_notifications">Notifications</string>
+    <string name="item_notifications_detail">Required — the recording has to be visible while it runs.</string>
+
+    <string name="item_battery">Unrestricted battery use</string>
+    <string name="item_battery_detail">Keeps Android from putting the recorder to sleep.</string>
+
+    <string name="item_oem">%1$s app restrictions</string>
+    <string name="item_oem_detail">%1$s stops background apps on its own terms. Recording will not survive without this.</string>
+
+    <!-- Prompts -->
+
+    <string name="rationale_title">Location while recording</string>
+    <string name="rationale_msg">Freemap Tracker records your location — including while the app is closed or not in use — for as long as a recording is running, and for no other reason.\n\nFixes are written to this device only, into the app\'s private storage. Nothing is uploaded anywhere.</string>
+    <string name="rationale_continue">Continue</string>
+
+    <string name="background_title">Allow all the time</string>
+    <string name="background_msg">Android will not offer this in a prompt, so it has to be set by hand.\n\nOn the next screen open Permissions → Location and choose \"Allow all the time\".</string>
+
+    <string name="battery_title">Unrestricted battery use</string>
+    <string name="battery_msg">Android puts apps to sleep to save power. A sleeping recorder records nothing, and it is not told to stop — the track simply ends where the phone decided it should, usually with no warning at all.\n\nAllowing unrestricted battery use is what keeps a long recording intact.</string>
+
+    <string name="oem_open">Open settings</string>
+    <string name="oem_done">I\'ve done this</string>
+    <string name="oem_no_screen">This version of the software does not have that screen where it is expected — look for it in the settings app.</string>
+
+    <string name="later">Later</string>
+    <string name="open_settings">Open settings</string>
+
+    <string name="denied_permanently">Denied for good — turn it on under Permissions in app settings.</string>
+    <string name="no_settings_screen">Could not open that settings screen on this device.</string>
+
+    <!-- Vendors -->
+
+    <string name="vendor_xiaomi">Xiaomi</string>
+    <string name="vendor_xiaomi_help">Open Settings → Apps → Permissions → Autostart and switch on Freemap Tracker.\n\nThen, under Settings → Battery → App battery saver, set Freemap Tracker to No restrictions.</string>
+
+    <string name="vendor_huawei">Huawei</string>
+    <string name="vendor_huawei_help">Open Phone Manager → App launch, switch Freemap Tracker from Manage automatically to Manage manually, and turn on Auto-launch, Secondary launch and Run in background.</string>
+
+    <string name="vendor_samsung">Samsung</string>
+    <string name="vendor_samsung_help">Open Settings → Battery → Background usage limits, turn off Put unused apps to sleep, and make sure Freemap Tracker is in neither the Sleeping nor the Deep sleeping list.</string>
+
+    <string name="vendor_oppo">Oppo</string>
+    <string name="vendor_oppo_help">Open Settings → Battery → App battery management and allow Freemap Tracker to run in the background.\n\nThen, in the phone manager\'s Startup manager, allow it to auto-start.</string>
+
+    <string name="vendor_vivo">Vivo</string>
+    <string name="vendor_vivo_help">Open iManager → App manager → Autostart manager and enable Freemap Tracker.\n\nThen, under Battery → High background power consumption, allow it as well.</string>
+
+    <string name="vendor_oneplus">OnePlus</string>
+    <string name="vendor_oneplus_help">Open Settings → Battery → Battery optimisation and set Freemap Tracker to Don\'t optimise.\n\nIf your version has Advanced optimisation, turn off Deep optimisation and Sleep standby optimisation.</string>
 </resources>

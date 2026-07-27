@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ok">#2E7D32</color>
+    <color name="missing">#C62828</color>
+    <color name="warn">#B26500</color>
+    <color name="warn_bg">#FFF3E0</color>
+    <color name="detail">#616161</color>
+</resources>

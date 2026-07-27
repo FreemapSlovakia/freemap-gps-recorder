@@ -300,7 +300,9 @@ class MainActivity : Activity() {
                 renderSetup()
             }
             .setNeutralButton(R.string.oem_open) { _, _ ->
-                if (!vendor.openSettings(this)) toast(R.string.oem_no_screen)
+                // Several of these vendors keep the switch on the app's own info page, and it is
+                // where the rest end up looking anyway when their global list has moved.
+                if (!vendor.openSettings(this)) openAppSettings()
             }
             .setNegativeButton(R.string.later, null)
             .show()

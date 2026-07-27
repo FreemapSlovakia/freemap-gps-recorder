@@ -50,6 +50,11 @@ to record, and without the second a recording would run with no visible sign of 
 thing a foreground service exists to prevent. `POST /start` refuses the same two with `403` and
 `"error":"setup incomplete"`.
 
+`TrackingService` checks the same gate in `onStartCommand` and stops instead of starting. That is not
+a formality: revoking a permission kills the app process, `START_STICKY` has the system restart the
+service, and Play services does not fail the location subscription synchronously — so without the
+check the service comes back and sits in the notification claiming to record while appending nothing.
+
 The rest only make a recording *survive*, so they never block anything; while any of them is
 outstanding a banner says as much and the checklist stays on screen. Once everything is resolved
 both disappear and the screen is just state, count and button again.
@@ -62,11 +67,18 @@ row stays disabled until location is granted.
 
 Xiaomi, Huawei, Samsung, Oppo, Vivo and OnePlus kill background apps on terms of their own, well
 beyond anything the platform does, and no API reports whether they have been told not to. The
-checklist detects the manufacturer, shows what to change, and offers a shortcut to the vendor's own
-settings screen. Those components are undocumented and move between ROM versions, so each vendor has
-several candidates tried in turn and every launch is wrapped — a miss falls back to the text, which
-is the real answer anyway. The row is the user's word that it is done, kept in `SharedPreferences`,
-and it is only shown at all on those manufacturers.
+checklist detects the manufacturer, shows what to change, and offers a shortcut to the screen that
+changes it. Vendor components are undocumented and move between ROM versions, so each is tried in
+turn and every launch is wrapped; anything that misses falls back to the app-details page, which is
+where the per-app switches live on most of these ROMs anyway. The row is the user's word that it is
+done, kept in `SharedPreferences`, and it is only shown at all on those manufacturers.
+
+Note what this item is *not*: autostart. Autostart governs whether a vendor ROM may launch an app
+that is not running — on boot, from a broadcast, from another app. A recording the user started is
+already running, so autostart is not what keeps it alive; the per-app battery mode is. It matters
+here only in one place, and second-hand: `TrackingService` is `START_STICKY`, so a process kill has
+the system try to start the service again, and *that* is a background start a vendor can refuse.
+The guidance says so rather than repeating the folklore.
 
 ## Local HTTP API
 
@@ -220,3 +232,28 @@ recording started in both cases and the browser was the resumed activity again w
 no dialog in between. When the app was already open its task survived the hand-back; when the link
 had created the task, no activity was left behind. `?port=` came back as `portEcho`, and a
 mismatched port was logged rather than acted on.
+
+The setup checklist was walked end to end on an API 36 emulator, since MIUI refuses `INJECT_EVENTS`
+over adb and the phone cannot be driven by script:
+
+- from a state with every permission revoked: Start disabled, no banner, location and notifications
+  marked missing and blocking, background disabled behind *Grant location access first*
+- the disclosure screen precedes the system location prompt, and granting it enables the background
+  row on return
+- background location opens App info, where *Allow all the time* lives; the battery item explains
+  itself and then raises `RequestIgnoreBatteryOptimizations`, and the row flips to ✓ on resume
+- granting the last item from outside the app, while it sat in the background, collapsed both the
+  checklist and the banner on resume — nothing else prompted it
+- `POST /start` with notifications revoked answered `403` with `"canRecord":false` and
+  `"error":"setup incomplete"`, then `200` once granted
+- `freemap-recorder://start` still hands focus straight back when setup is complete; with location
+  revoked it keeps the app up and opens the first blocking item instead
+
+Revoking location mid-recording is what turned up the zombie-service case above: the service came
+back with `recording:true` and `lastSeq` frozen. With the gate in `onStartCommand` the restart logs
+`cannot record: location or notification permission missing, stopping` and leaves no service record,
+and no `ForegroundServiceDidNotStartInTimeException` for stopping before going foreground.
+
+On the phone, vendor detection reports `"oem":{"vendor":"xiaomi","needed":true}`, and setting the
+acknowledgement flips `acknowledged` and `setupComplete` together. The vendor dialog's own buttons
+are the one thing not exercised by script, for the `INJECT_EVENTS` reason above.

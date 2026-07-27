@@ -40,7 +40,7 @@
     <string name="item_battery_detail">Keeps Android from putting the recorder to sleep.</string>
 
     <string name="item_oem">%1$s app restrictions</string>
-    <string name="item_oem_detail">%1$s stops background apps on its own terms. Recording will not survive without this.</string>
+    <string name="item_oem_detail">%1$s restricts background apps beyond Android\'s own rules, and a long recording may not survive its defaults.</string>
 
     <!-- Prompts -->
 
@@ -56,7 +56,6 @@
 
     <string name="oem_open">Open settings</string>
     <string name="oem_done">I\'ve done this</string>
-    <string name="oem_no_screen">This version of the software does not have that screen where it is expected — look for it in the settings app.</string>
 
     <string name="later">Later</string>
     <string name="open_settings">Open settings</string>
@@ -67,7 +66,7 @@
     <!-- Vendors -->
 
     <string name="vendor_xiaomi">Xiaomi</string>
-    <string name="vendor_xiaomi_help">Open Settings → Apps → Permissions → Autostart and switch on Freemap Tracker.\n\nThen, under Settings → Battery → App battery saver, set Freemap Tracker to No restrictions.</string>
+    <string name="vendor_xiaomi_help">The one that matters: Settings → Apps → Manage apps → Freemap Tracker → Battery saver, set to No restrictions.\n\nIt also helps to lock the app in Recents, so clearing recent apps does not take the recording with it.\n\nAutostart, on the same app screen, is not what keeps a running recording alive — it only decides whether MIUI may start the app again after killing it. Worth switching on, but it is not the fix.</string>
 
     <string name="vendor_huawei">Huawei</string>
     <string name="vendor_huawei_help">Open Phone Manager → App launch, switch Freemap Tracker from Manage automatically to Manage manually, and turn on Auto-launch, Secondary launch and Run in background.</string>

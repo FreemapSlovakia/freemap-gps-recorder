@@ -16,13 +16,9 @@ import android.util.Log
  */
 enum class Vendor(val label: Int, val guidance: Int, private val screens: List<String>) {
 
-    XIAOMI(
-        R.string.vendor_xiaomi, R.string.vendor_xiaomi_help,
-        listOf(
-            "com.miui.securitycenter/com.miui.permcenter.autostart.AutoStartManagementActivity",
-            "com.miui.securitycenter/com.miui.powercenter.PowerSettings",
-        ),
-    ),
+    // No component: MIUI puts both switches that matter — Battery saver and Autostart — on the
+    // app's own info page, which the documented app-details intent already opens.
+    XIAOMI(R.string.vendor_xiaomi, R.string.vendor_xiaomi_help, emptyList()),
 
     HUAWEI(
         R.string.vendor_huawei, R.string.vendor_huawei_help,
@@ -70,9 +66,10 @@ enum class Vendor(val label: Int, val guidance: Int, private val screens: List<S
     ;
 
     /**
-     * Opens the vendor's own settings screen. Returns false when this ROM has none of them, which is
-     * common enough — the components are guesses about somebody else's private app, so anything
-     * from a renamed class to a missing export permission lands here.
+     * Opens the vendor's own settings screen, for the vendors whose switch is on a global list
+     * rather than on the app's own page. Returns false when this ROM has none of them — the
+     * components are guesses about somebody else's private app, so anything from a renamed class to
+     * a missing export permission lands here, and the caller falls back to app details.
      */
     fun openSettings(context: Context): Boolean {
         for (screen in screens) {

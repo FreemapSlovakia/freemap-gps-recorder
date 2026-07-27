@@ -63,6 +63,19 @@ class TrackingService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // Recording is impossible without location, and invisible without the notification. The
+        // restart path makes this more than a formality: a null intent means the system brought us
+        // back after a process kill, and revoking a permission is itself what kills the process — so
+        // this is exactly where a revoke lands. Play services does not fail the subscription
+        // synchronously, so without this check the service would sit in the notification claiming to
+        // record while appending nothing.
+        if (!Setup.canRecord(this)) {
+            Log.w(TAG, "cannot record: location or notification permission missing, stopping")
+            stopTracking()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         // A null intent means the system restarted us after a process kill — resume recording.
         startTracking()
         return START_STICKY

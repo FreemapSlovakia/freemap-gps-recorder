@@ -46,8 +46,10 @@ class TrackingService : Service() {
             if (!tracking) return
             val store = store ?: return
             for (loc in result.locations) {
-                TrackerState.lastSeq = store.append(loc)
+                val point = store.append(loc)
+                TrackerState.lastSeq = point.seq
                 TrackerState.pointCount++
+                PointBus.publish(point)
             }
             maybeRefreshNotification()
         }
@@ -78,8 +80,9 @@ class TrackingService : Service() {
         }
         tracking = true
 
-        val store = PointStore(this).also { this.store = it }
+        val store = PointStore.get(this).also { this.store = it }
         TrackerState.pointCount = store.count()
+        TrackerState.lastSeq = store.maxSeq()
         TrackerState.recording = true
 
         startInForeground()
@@ -128,7 +131,7 @@ class TrackingService : Service() {
         worker?.quitSafely()
         worker = null
 
-        store?.close()
+        // The store outlives the recording — the HTTP API serves the track either way.
         store = null
 
         stopForeground(STOP_FOREGROUND_REMOVE)

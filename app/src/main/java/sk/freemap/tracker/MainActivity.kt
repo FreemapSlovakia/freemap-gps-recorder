@@ -2,11 +2,17 @@ package sk.freemap.tracker
 
 import android.Manifest
 import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
+import android.util.Log
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -44,7 +50,7 @@ class MainActivity : Activity() {
 
         // Cold start with nothing recording: show what is already on disk.
         if (!TrackerState.recording) {
-            Thread { TrackerState.pointCount = PointStore(this).use { it.count() } }.start()
+            Thread { TrackerState.pointCount = PointStore.get(this).count() }.start()
         }
     }
 
@@ -99,7 +105,37 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQ_BACKGROUND)
             return
         }
+        requestExemptionThenStart()
+    }
+
+    /**
+     * Not needed to record, but Android 12+ refuses to let a backgrounded app start a foreground
+     * service unless it is exempt from battery optimisation — which is what `POST /start` on the
+     * local API does. Declining is fine; only remote start is lost.
+     */
+    private fun requestExemptionThenStart() {
+        val power = getSystemService(PowerManager::class.java)
+        if (!power.isIgnoringBatteryOptimizations(packageName)) {
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                .setData(Uri.parse("package:$packageName"))
+            try {
+                // Deliberately not resolveActivity() first — package-visibility filtering can hide
+                // the handler from us on Android 11+, so the exception is the reliable signal.
+                toast(R.string.need_exemption)
+                startActivityForResult(intent, REQ_EXEMPTION)
+                return
+            } catch (e: ActivityNotFoundException) {
+                Log.w(TAG, "no battery optimisation settings screen on this device", e)
+            }
+        }
         TrackingService.start(this)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        // The exemption dialog always reports RESULT_CANCELED, so there is nothing to inspect —
+        // and either answer leads to the same place.
+        if (requestCode == REQ_EXEMPTION) TrackingService.start(this)
     }
 
     override fun onRequestPermissionsResult(
@@ -129,7 +165,7 @@ class MainActivity : Activity() {
                 if (!granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION)) {
                     toast(R.string.background_denied)
                 }
-                TrackingService.start(this)
+                requestExemptionThenStart()
             }
         }
     }
@@ -140,8 +176,10 @@ class MainActivity : Activity() {
     private fun toast(res: Int) = Toast.makeText(this, res, Toast.LENGTH_LONG).show()
 
     companion object {
+        private const val TAG = "MainActivity"
         private const val REQ_FOREGROUND = 1
         private const val REQ_BACKGROUND = 2
+        private const val REQ_EXEMPTION = 3
         private const val REFRESH_MS = 500L
     }
 }

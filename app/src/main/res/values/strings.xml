@@ -17,4 +17,5 @@
     <string name="need_background">For recording to survive backgrounding, choose "Allow all the time".</string>
     <string name="background_denied">Background location denied — recording may stop when the app is backgrounded.</string>
     <string name="notifications_denied">Notifications denied — the recording notification will be hidden.</string>
+    <string name="need_exemption">Allow unrestricted battery use, so recording can be started remotely.</string>
 </resources>

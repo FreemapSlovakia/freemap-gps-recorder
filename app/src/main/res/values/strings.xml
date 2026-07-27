@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Freemap Tracker</string>
+
+    <string name="state_recording">Recording</string>
+    <string name="state_idle">Not recording</string>
+    <string name="points_fmt">%1$d points</string>
+
+    <string name="start">Start</string>
+    <string name="stop">Stop</string>
+
+    <string name="notif_channel">Track recording</string>
+    <string name="notif_title">Recording track</string>
+    <string name="notif_text">%1$d points</string>
+
+    <string name="need_location">Location permission is required to record.</string>
+    <string name="need_background">For recording to survive backgrounding, choose "Allow all the time".</string>
+    <string name="background_denied">Background location denied — recording may stop when the app is backgrounded.</string>
+    <string name="notifications_denied">Notifications denied — the recording notification will be hidden.</string>
+</resources>

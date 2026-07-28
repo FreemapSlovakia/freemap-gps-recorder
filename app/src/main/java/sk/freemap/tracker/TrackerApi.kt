@@ -121,6 +121,9 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
      * Everything the setup screen shows, so a page can say "the recorder needs setup" instead of
      * watching `POST /start` fail for reasons it cannot name. `canRecord` is the hard gate;
      * `setupComplete` additionally covers the items that only make a long recording survive.
+     *
+     * `version` is here so a page can tell which recorder it is talking to, and say "too old for
+     * this" rather than calling an endpoint that will not answer.
      */
     private fun statusJson(error: String? = null): String {
         val vendor = Vendor.current
@@ -128,6 +131,10 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
         sb.append("{\"recording\":").append(TrackerState.recording)
         sb.append(",\"lastSeq\":").append(store.maxSeq())
         sb.append(",\"count\":").append(store.count())
+        sb.append(",\"version\":{\"code\":").append(AppVersion.code(app))
+        sb.append(",\"name\":")
+        quoted(sb, AppVersion.name(app))
+        sb.append('}')
         sb.append(",\"port\":").append(PORT)
         sb.append(",\"portEcho\":").append(TrackerState.portEcho)
         sb.append(",\"permissions\":{\"fine\":").append(Setup.fine(app))
@@ -135,16 +142,21 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
         sb.append(",\"notifications\":").append(Setup.notifications(app))
         sb.append("},\"batteryExempt\":").append(Setup.batteryExempt(app))
         sb.append(",\"oem\":{\"vendor\":")
-            .append(if (vendor == null) "null" else "\"${vendor.name.lowercase()}\"")
+        if (vendor == null) sb.append("null") else quoted(sb, vendor.id)
         sb.append(",\"needed\":").append(vendor != null)
         sb.append(",\"acknowledged\":").append(Setup.oemAcknowledged(app))
         sb.append("},\"canRecord\":").append(Setup.canRecord(app))
         sb.append(",\"setupComplete\":").append(Setup.complete(app))
         if (error != null) {
-            sb.append(",\"error\":\"").append(error.replace("\\", "\\\\").replace("\"", "\\\"")).append('"')
+            sb.append(",\"error\":")
+            quoted(sb, error)
         }
         sb.append('}')
         return sb.toString()
+    }
+
+    private fun quoted(sb: StringBuilder, value: String) {
+        sb.append('"').append(value.replace("\\", "\\\\").replace("\"", "\\\"")).append('"')
     }
 
     private fun json(status: Response.IStatus, body: String): Response =

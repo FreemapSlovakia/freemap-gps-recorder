@@ -1,6 +1,10 @@
 *.iml
 .gradle/
 local.properties
+# Release signing credentials. The keystore itself lives outside the repository entirely.
+keystore.properties
+*.jks
+*.keystore
 .idea/
 build/
 captures/

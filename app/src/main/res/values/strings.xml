@@ -63,6 +63,41 @@
     <string name="denied_permanently">Denied for good — turn it on under Permissions in app settings.</string>
     <string name="no_settings_screen">Could not open that settings screen on this device.</string>
 
+    <!-- Menu -->
+
+    <string name="menu_update">Check for updates</string>
+    <string name="menu_help">Installing and updating</string>
+
+    <!-- Update check -->
+
+    <string name="update_title">Version %1$s is available</string>
+    <string name="update_msg">You have %1$s.\n\n%2$s</string>
+    <string name="update_obsolete_title">Update needed — version %1$s</string>
+    <string name="update_obsolete_msg">You have %1$s, which freemap.sk no longer supports. Recording still works, but the website may not be able to follow it.\n\n%2$s</string>
+    <string name="update_download">Download</string>
+    <string name="update_skip">Skip this one</string>
+    <string name="update_current">Up to date — this is %1$s.</string>
+    <string name="update_failed">Could not reach the update server. It will try again later.</string>
+    <string name="update_recording">Not while recording — an update can wait until the track is finished.</string>
+    <string name="no_browser">Nothing on this phone could open that link.</string>
+
+    <!-- Installing and updating -->
+
+    <string name="help_title">Installing and updating</string>
+
+    <string name="help_install_heading">Installing from a download</string>
+    <string name="help_install">This app is not on Google Play — it is downloaded from freemap.sk and installed by hand.\n\nThe first time you do that, Android will not install the file straight away: it asks whether the browser that downloaded it is allowed to install apps. Follow the prompt to Settings, turn the permission on for your browser, and go back — the install then continues. You only do this once per browser.</string>
+
+    <string name="help_updates_heading">Updates</string>
+    <string name="help_updates">The app checks once a day, on Wi-Fi where possible and never during a recording, and offers a download when there is a newer version. Nothing is installed on its own.\n\nAn update installs over the top of this one and keeps your recorded track. Do not uninstall first — uninstalling takes the recording with it.</string>
+
+    <string name="help_obtainium_heading">Or use Obtainium</string>
+    <string name="help_obtainium">Obtainium can watch for new versions and install them for you. Add the app there by URL, using this address, and choose the \"APK Link\" or third-party source type:</string>
+    <string name="help_manifest">Update manifest URL</string>
+    <string name="help_copy">Copy address</string>
+    <string name="help_copied">Copied</string>
+    <string name="help_version">This build: %1$s (code %2$d)</string>
+
     <!-- Vendors -->
 
     <string name="vendor_xiaomi">Xiaomi</string>

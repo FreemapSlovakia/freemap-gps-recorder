@@ -13,6 +13,8 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.util.Log
+import android.view.Menu
+import android.view.MenuItem
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
@@ -48,6 +50,12 @@ class MainActivity : Activity() {
 
     /** Whether this task exists only because a link opened it — decides finish vs. move-to-back. */
     private var openedByLink = false
+
+    /** An update is offered once per visit at most, however many resumes that visit contains. */
+    private var updateOffered = false
+
+    /** A dialog raised after the activity has gone away is a crash, so the callback checks this. */
+    private var resumed = false
 
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
@@ -95,16 +103,94 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        resumed = true
         renderSetup()
         handler.post(ticker)
         // A link that arrived before the app was able to record is fulfilled the moment it can be —
         // which is usually right here, on the way back from a permission prompt or settings screen.
         if (returnAfterStart && !TrackerState.recording && canRecord) startRecording()
+        // Not on the way through: a link hand-back is about to send this screen to the back, and an
+        // update prompt has no business arriving as it goes.
+        if (!returnAfterStart && !updateOffered) checkForUpdates(manual = false)
     }
 
     override fun onPause() {
+        resumed = false
         handler.removeCallbacks(ticker)
         super.onPause()
+    }
+
+    // --- menu ---------------------------------------------------------------------------------
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.main, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.menu_update -> {
+            if (TrackerState.recording) toast(R.string.update_recording) else checkForUpdates(manual = true)
+            true
+        }
+
+        R.id.menu_help -> {
+            startActivity(Intent(this, HelpActivity::class.java))
+            true
+        }
+
+        else -> super.onOptionsItemSelected(item)
+    }
+
+    // --- updates ------------------------------------------------------------------------------
+
+    /**
+     * A [manual] check reports back either way, since somebody is waiting for an answer; the
+     * automatic one is silent unless there is something to offer. Both are gated in [UpdateCheck] —
+     * neither runs during a recording.
+     */
+    private fun checkForUpdates(manual: Boolean) {
+        UpdateCheck.request(this, manual) { result ->
+            if (isFinishing || isDestroyed) return@request
+            val update = result.update
+            when {
+                update != null -> if (resumed) showUpdate(update)
+                !manual -> Unit
+                result.failed -> toast(R.string.update_failed)
+                else -> toast(getString(R.string.update_current, AppVersion.name(this)))
+            }
+        }
+    }
+
+    private fun showUpdate(update: UpdateCheck.Update) {
+        updateOffered = true
+        val installed = AppVersion.name(this)
+        val builder = AlertDialog.Builder(this)
+            .setNegativeButton(R.string.later, null)
+            .setPositiveButton(R.string.update_download) { _, _ -> openUrl(update.apkUrl) }
+
+        if (update.obsolete) {
+            // No skipping a version the server has stopped supporting — declining it is still fine,
+            // it just gets offered again tomorrow.
+            builder.setTitle(getString(R.string.update_obsolete_title, update.versionName))
+                .setMessage(getString(R.string.update_obsolete_msg, installed, update.notes))
+        } else {
+            builder.setTitle(getString(R.string.update_title, update.versionName))
+                .setMessage(getString(R.string.update_msg, installed, update.notes))
+                .setNeutralButton(R.string.update_skip) { _, _ ->
+                    UpdateCheck.skip(this, update.versionCode)
+                }
+        }
+        builder.show()
+    }
+
+    /** Hands the APK to the browser, which is where the user installs it from — never in-app. */
+    private fun openUrl(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (e: Exception) {
+            Log.w(TAG, "could not open $url", e)
+            toast(R.string.no_browser)
+        }
     }
 
     private fun render() {
@@ -401,6 +487,8 @@ class MainActivity : Activity() {
     }
 
     private fun toast(res: Int) = Toast.makeText(this, res, Toast.LENGTH_LONG).show()
+
+    private fun toast(text: String) = Toast.makeText(this, text, Toast.LENGTH_LONG).show()
 
     companion object {
         private const val TAG = "MainActivity"

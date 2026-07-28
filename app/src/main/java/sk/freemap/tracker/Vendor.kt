@@ -14,14 +14,20 @@ import android.util.Log
  * turn and a miss is never fatal — [guidance] is the real answer, and the intent is only a shortcut
  * to the screen it describes.
  */
-enum class Vendor(val label: Int, val guidance: Int, private val screens: List<String>) {
+enum class Vendor(
+    /** The name `GET /status` reports. Spelled out rather than taken from [name], which R8 renames. */
+    val id: String,
+    val label: Int,
+    val guidance: Int,
+    private val screens: List<String>,
+) {
 
     // No component: MIUI puts both switches that matter — Battery saver and Autostart — on the
     // app's own info page, which the documented app-details intent already opens.
-    XIAOMI(R.string.vendor_xiaomi, R.string.vendor_xiaomi_help, emptyList()),
+    XIAOMI("xiaomi", R.string.vendor_xiaomi, R.string.vendor_xiaomi_help, emptyList()),
 
     HUAWEI(
-        R.string.vendor_huawei, R.string.vendor_huawei_help,
+        "huawei", R.string.vendor_huawei, R.string.vendor_huawei_help,
         listOf(
             "com.huawei.systemmanager/com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
             "com.huawei.systemmanager/com.huawei.systemmanager.appcontrol.activity.StartupAppControlActivity",
@@ -30,7 +36,7 @@ enum class Vendor(val label: Int, val guidance: Int, private val screens: List<S
     ),
 
     SAMSUNG(
-        R.string.vendor_samsung, R.string.vendor_samsung_help,
+        "samsung", R.string.vendor_samsung, R.string.vendor_samsung_help,
         listOf(
             "com.samsung.android.lool/com.samsung.android.sm.battery.ui.BatteryActivity",
             "com.samsung.android.lool/com.samsung.android.sm.ui.battery.BatteryActivity",
@@ -39,7 +45,7 @@ enum class Vendor(val label: Int, val guidance: Int, private val screens: List<S
     ),
 
     OPPO(
-        R.string.vendor_oppo, R.string.vendor_oppo_help,
+        "oppo", R.string.vendor_oppo, R.string.vendor_oppo_help,
         listOf(
             "com.coloros.safecenter/com.coloros.safecenter.permission.startup.StartupAppListActivity",
             "com.coloros.safecenter/com.coloros.safecenter.startupapp.StartupAppListActivity",
@@ -48,7 +54,7 @@ enum class Vendor(val label: Int, val guidance: Int, private val screens: List<S
     ),
 
     VIVO(
-        R.string.vendor_vivo, R.string.vendor_vivo_help,
+        "vivo", R.string.vendor_vivo, R.string.vendor_vivo_help,
         listOf(
             "com.vivo.permissionmanager/com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
             "com.iqoo.secure/com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity",
@@ -57,7 +63,7 @@ enum class Vendor(val label: Int, val guidance: Int, private val screens: List<S
     ),
 
     ONEPLUS(
-        R.string.vendor_oneplus, R.string.vendor_oneplus_help,
+        "oneplus", R.string.vendor_oneplus, R.string.vendor_oneplus_help,
         listOf(
             "com.oneplus.security/com.oneplus.security.chainlaunch.view.ChainLaunchAppListActivity",
         ),

@@ -16,9 +16,47 @@ setup checklist. Track management and upload come later.
 ```sh
 ./gradlew assembleDebug     # APK in app/build/outputs/apk/debug/
 ./gradlew installDebug      # build and install on the attached device
+./gradlew releaseApk        # signed, shrunk, as app/build/distributions/freemap-recorder-<version>.apk
 ```
 
 Toolchain: AGP 9.2.1, Gradle 9.4.1, JDK 17+, compileSdk/targetSdk 36, minSdk 26.
+
+The version lives in `gradle.properties` — `tracker.versionCode` and `tracker.versionName` — and
+everything else derives from it: the manifest, the APK filename, and `version` in `GET /status`.
+`versionCode` has to go up for every published APK, because it is what the update check compares
+against the server's manifest.
+
+Release builds are minified and resource-shrunk (~300 KB). There are no keep rules to speak of: the
+app reflects on nothing, and every string that crosses a boundary — the `/status` field names, the
+`Vendor.id` values, the SQLite column names, the update manifest's keys — is written out literally
+rather than derived from a class or member name. `Vendor.id` exists for exactly that reason, since
+the enum's own `name` is renamed by R8.
+
+`releaseApk` produces one universal APK. There is no app bundle and no ABI split: bundles are a Play
+distribution format and would be useless for a direct download, and with no native code a single APK
+already covers every device.
+
+### Signing
+
+Release signing credentials are read from environment variables first, then `keystore.properties`
+beside the project (gitignored — see `keystore.properties.example`), then `~/.gradle/gradle.properties`:
+
+| variable | property |
+| --- | --- |
+| `FREEMAP_TRACKER_STORE_FILE` | `tracker.storeFile` |
+| `FREEMAP_TRACKER_STORE_PASSWORD` | `tracker.storePassword` |
+| `FREEMAP_TRACKER_KEY_ALIAS` | `tracker.keyAlias` |
+| `FREEMAP_TRACKER_KEY_PASSWORD` | `tracker.keyPassword` |
+
+With none of them set the build still runs and says so, producing an unsigned APK. The keystore
+itself never lives in the repository, and `*.jks`, `*.keystore` and `keystore.properties` are
+gitignored so it cannot wander in.
+
+**Back the keystore up somewhere that is not this working copy.** A self-hosted APK has no Play App
+Signing safety net: without that key no update can install over an existing install, and every user
+would have to uninstall first — losing whatever they had recorded. Signing is v2 + v3; v3 is the
+scheme that understands key rotation, which is the nearest thing to an escape route if the key is
+ever lost or compromised.
 
 ## How it works
 
@@ -94,7 +132,7 @@ has to be answerable before anything is being recorded.
 | `GET /stream` | Server-Sent Events tail, one event per fix, `id:` set to the point's `seq` |
 | `POST /start` | start recording; returns the status object |
 | `POST /stop` | stop recording; returns the status object |
-| `GET /status` | recording state, `lastSeq`, point count, `port`/`portEcho`, and the whole [setup](#setup) state |
+| `GET /status` | recording state, `lastSeq`, point count, recorder `version`, `port`/`portEcho`, and the whole [setup](#setup) state |
 
 Points are encoded positionally to keep long tracks small:
 
@@ -110,7 +148,8 @@ over a long track those digits add up. Absent fields are `null`, never `0`.
 watching `POST /start` fail for reasons it cannot name:
 
 ```json
-{"recording":false,"lastSeq":24,"count":24,"port":8378,"portEcho":null,
+{"recording":false,"lastSeq":24,"count":24,"version":{"code":2,"name":"0.2"},
+ "port":8378,"portEcho":null,
  "permissions":{"fine":true,"background":true,"notifications":false},
  "batteryExempt":true,
  "oem":{"vendor":"xiaomi","needed":true,"acknowledged":false},
@@ -120,6 +159,10 @@ watching `POST /start` fail for reasons it cannot name:
 `canRecord` is the hard gate — the same one the Start button uses. `setupComplete` additionally
 covers the items that only make a long recording survive. `oem.needed` is false on manufacturers
 that leave background apps alone, and `oem.vendor` is then `null`.
+
+`version` is which recorder is answering, read back from the installed package. A page can compare
+`version.code` against what it needs and say so, rather than calling an endpoint that a build this
+old does not have.
 
 `/stream` honours `Last-Event-ID` on reconnect: it replays the points after that id, then continues
 live. The subscription is registered *before* the replay query runs, so a fix recorded during the
@@ -181,6 +224,66 @@ without it Android 12+ rejects the foreground-service start with
 `ForegroundServiceStartNotAllowedException`, which the endpoint reports as a `409` with the exception
 name in `error`. Declining the exemption costs only remote start, not recording, which is why it is
 a non-blocking [checklist](#setup) item; `/status` reports it as `batteryExempt`.
+
+## Distribution and updates
+
+The APK is downloaded from the Freemap server and installed by hand, so the first install runs into
+the one thing Android asks about a browser download: whether that browser may install apps. The
+in-app **Installing and updating** screen (overflow menu) explains that, says that an update installs
+over the top and keeps the recorded track — and that uninstalling does not — and shows the manifest
+URL for anyone who would rather point [Obtainium](https://obtainium.imranr.dev/) at it.
+
+The app checks for a newer version against a small JSON manifest, at
+`tracker.updateManifestUrl` (`gradle.properties`, baked in as `BuildConfig.UPDATE_MANIFEST_URL`):
+
+```json
+{
+  "versionCode": 7,
+  "versionName": "1.3.0",
+  "apkUrl": "https://…/freemap-recorder-1.3.0.apk",
+  "notes": "…",
+  "minSupportedVersionCode": 3
+}
+```
+
+`versionCode` is compared against this build's own; anything higher is offered in a dismissable
+dialog with `notes` in it, and **Download** hands `apkUrl` to the browser. Nothing is downloaded and
+nothing is installed by the app itself — no silent update, no self-installer. `apkUrl` has to be
+`https`, since it arrives over the network and decides where the user is sent to fetch something they
+will then install. `minSupportedVersionCode` is the server saying it has dropped this build: the
+prompt then says the website may no longer be able to follow a recording, and the version cannot be
+skipped.
+
+When it checks:
+
+- **at most once a day**, counted from every attempt rather than every success, so a server that is
+  down cannot turn that into once per resume
+- **unmetered by preference** — on mobile data it waits up to 30 days rather than never, since a
+  phone that only ever sees mobile data would otherwise never hear about an update at all and the
+  manifest is a few hundred bytes
+- **never during a recording**, including a check the user asks for, which answers *not while
+  recording* instead. An update prompt over a running track is an interruption of the one thing the
+  app exists to do
+- not while handing focus back to a browser after a `freemap-recorder://` link
+- **Skip this one** remembers that `versionCode`, so an offer declined for good is not repeated
+  tomorrow. A manual check ignores that, and so does an obsolete build
+
+Every failure — offline, timeout, 404, a body that is not the manifest, one over 64 KB — is a log
+line at `I/UpdateCheck` and nothing else. A recorder that cannot check for updates is still a
+recorder, so nothing here is allowed to interrupt or crash recording. A check the user asked for is
+the one case that reports failure, in a toast.
+
+To point a build at a manifest of your own:
+
+```sh
+python3 -m http.server 8099 --bind 127.0.0.1     # serving latest.json
+adb reverse tcp:8099 tcp:8099
+./gradlew releaseApk -Ptracker.updateManifestUrl=http://127.0.0.1:8099/latest.json
+```
+
+That is what the loopback exception in `network_security_config.xml` is for. Cleartext is off
+everywhere else, and the app's own HTTP API is unaffected either way — listening on a socket is not
+subject to that policy.
 
 ## Storage
 
@@ -257,3 +360,37 @@ and no `ForegroundServiceDidNotStartInTimeException` for stopping before going f
 On the phone, vendor detection reports `"oem":{"vendor":"xiaomi","needed":true}`, and setting the
 acknowledgement flips `acknowledged` and `setupComplete` together. The vendor dialog's own buttons
 are the one thing not exercised by script, for the `INJECT_EVENTS` reason above.
+
+The signed, minified release APK was verified on the same emulator. A clean install (uninstall
+first) reports `versionCode=2`, `signatures=PackageSignatures{version:3}`, and `/status` answers
+`"version":{"code":2,"name":"0.2"}`. Recording under R8 behaves as it does unshrunk: the checklist,
+the disclosure screen and both system prompts render, and with the app backgrounded the service runs
+`isForeground=true types=0x8` and appends contiguous points. A screen-off run started from a
+`freemap-recorder://start` link recorded `seq` 1–283 over 408 s with nothing missing and no gap above
+3.4 s, and `POST /stop` left no service record behind. The positional `/track` encoding survives
+shrinking, which is the one thing to watch there.
+
+The update check was exercised against a manifest served over `adb reverse`:
+
+- a higher `versionCode` raises the prompt with the manifest's notes in it, and **Download** starts
+  `ACTION_VIEW https://…` in the browser — nothing is downloaded or installed by the app
+- **Skip this one** suppresses it: a day later the check runs, logs `3 available, previously skipped`
+  and stays silent, while a manual check offers it again
+- `minSupportedVersionCode` above this build turns it into *Update needed*, which overrides the skip
+  and drops the skip button
+- the daily gate holds — a second launch minutes later makes no request at all
+- 25 hours after a check, on mobile data, it makes no request; with Wi-Fi back, the same elapsed time
+  checks immediately. That pair is the whole unmetered rule
+- an update prompt never appears during a recording, and a check asked for from the menu answers
+  *not while recording* instead
+- every failure is a log line and nothing else: `HTTP 404` against the real (not yet published)
+  `https://freemap.sk/tracker/latest.json`, `apkUrl is not https` for a manifest pointing at
+  cleartext, and a `JSONException` for a body that is not JSON. No crash in any of them, and the
+  missing `ACCESS_NETWORK_STATE` permission that the first run turned up failed exactly this quietly
+
+An update installing over the top keeps the recording: 104 points were still there, and still served,
+after reinstalling with `install -r`.
+
+Two things were not driven end to end. The manifest URL is not published yet, so the only server this
+has spoken to is a local one. And the install-source prompt itself is Android's, on a first browser
+download — the help screen describes it but nothing here has been installed from a browser.

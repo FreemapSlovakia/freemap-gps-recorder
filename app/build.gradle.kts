@@ -9,6 +9,9 @@ plugins {
 val trackerVersionCode = providers.gradleProperty("tracker.versionCode").get().toInt()
 val trackerVersionName = providers.gradleProperty("tracker.versionName").get()
 val updateManifestUrl = providers.gradleProperty("tracker.updateManifestUrl").get()
+val publishedApkUrl = providers.gradleProperty("tracker.apkUrl").get()
+val minSupportedVersionCode = providers.gradleProperty("tracker.minSupportedVersionCode").get().toInt()
+val releaseNotes = providers.gradleProperty("tracker.releaseNotes").get()
 
 /**
  * Release signing credentials, which are never in the repository. Environment variables win, so a
@@ -171,8 +174,52 @@ tasks.named("check") {
 }
 
 /**
- * Copies the release APK out under the name the update manifest's `apkUrl` points at — the version
- * has to be in the filename, since the server keeps several of them side by side.
+ * Writes the `latest.json` that gets uploaded beside the APK. Generated rather than hand-edited for
+ * the obvious reason: a manifest advertising a version that was never built, or an old one after a
+ * release, is the one way this update mechanism can actively mislead a user.
+ *
+ * `notes` is deliberately not derived from anything — it is the one field a human has to write.
+ */
+val updateManifestFile = layout.buildDirectory.file("distributions/latest.json")
+
+tasks.register("updateManifest") {
+    description = "Writes the latest.json to publish alongside the release APK."
+    group = "build"
+    inputs.property("versionCode", trackerVersionCode)
+    inputs.property("versionName", trackerVersionName)
+    inputs.property("apkUrl", publishedApkUrl)
+    inputs.property("minSupported", minSupportedVersionCode)
+    inputs.property("notes", releaseNotes)
+    outputs.file(updateManifestFile)
+
+    doLast {
+        fun escape(value: String) = value
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+
+        val file = updateManifestFile.get().asFile
+        file.parentFile.mkdirs()
+        file.writeText(
+            """
+            {
+              "versionCode": $trackerVersionCode,
+              "versionName": "${escape(trackerVersionName)}",
+              "apkUrl": "${escape(publishedApkUrl)}",
+              "notes": "${escape(releaseNotes)}",
+              "minSupportedVersionCode": $minSupportedVersionCode
+            }
+
+            """.trimIndent()
+        )
+        logger.lifecycle("updateManifest: $file")
+    }
+}
+
+/**
+ * Copies the release APK out under the name the update manifest's `apkUrl` points at — the local
+ * copies keep their version in the filename so several builds can sit side by side here, whatever
+ * single name the server publishes them under.
  *
  * The doc check is a dependency rather than a separate step anyone has to remember: this is the task
  * that produces a publishable artefact, so it is the last honest moment to notice drift.
@@ -180,7 +227,7 @@ tasks.named("check") {
 tasks.register<Copy>("releaseApk") {
     description = "Builds the release APK and copies it out as freemap-recorder-<version>.apk."
     group = "build"
-    dependsOn("assembleRelease", "checkApiDocs")
+    dependsOn("assembleRelease", "checkApiDocs", "updateManifest")
     from(layout.buildDirectory.dir("outputs/apk/release")) {
         include("*.apk")
     }

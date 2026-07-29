@@ -208,17 +208,39 @@ over the top and keeps the recorded track — and that uninstalling does not —
 URL for anyone who would rather point [Obtainium](https://obtainium.imranr.dev/) at it.
 
 The app checks for a newer version against a small JSON manifest, at
-`tracker.updateManifestUrl` (`gradle.properties`, baked in as `BuildConfig.UPDATE_MANIFEST_URL`):
+`tracker.updateManifestUrl` (`gradle.properties`, baked in as `BuildConfig.UPDATE_MANIFEST_URL`) —
+currently `https://download.freemap.sk/freemap-recorder/latest.json`:
 
 ```json
 {
-  "versionCode": 7,
-  "versionName": "1.3.0",
-  "apkUrl": "https://…/freemap-recorder-1.3.0.apk",
-  "notes": "…",
-  "minSupportedVersionCode": 3
+  "versionCode": 5,
+  "versionName": "0.5",
+  "apkUrl": "https://download.freemap.sk/freemap-recorder/freemap-recorder.apk",
+  "notes": "Clear the recorded track from the website, and a documented local API.",
+  "minSupportedVersionCode": 1
 }
 ```
+
+**That file is generated, not hand-written.** `./gradlew releaseApk` writes it to
+`app/build/distributions/latest.json` from the same properties the APK is built from, so it cannot
+advertise a version that was never built. Publishing a release is: set `tracker.releaseNotes`, bump
+the version, run `./gradlew releaseApk`, then upload both files — the APK as
+`freemap-recorder.apk` and the manifest as `latest.json`. Upload the APK **first**, or a phone that
+checks in between will offer a download that 404s.
+
+| field | | from |
+| --- | --- | --- |
+| `versionCode` | **required** | `tracker.versionCode` |
+| `apkUrl` | **required**, must begin with `https://` | `tracker.apkUrl` |
+| `versionName` | optional; defaults to `versionCode` as text | `tracker.versionName` |
+| `notes` | optional; defaults to empty | `tracker.releaseNotes` |
+| `minSupportedVersionCode` | optional; defaults to `0` | `tracker.minSupportedVersionCode` |
+
+Two things to get right when publishing. The manifest must not be cached for long, or an update sits
+invisible behind a stale copy — the app only asks once a day as it is. And if `apkUrl` stays at one
+unversioned filename, that URL has to not be cached either, or the browser fetches the previous APK
+from cache and the user installs the version they already had. Serving the manifest with
+`Cache-Control: no-cache` and the APK with a short max-age avoids both.
 
 `versionCode` is compared against this build's own; anything higher is offered in a dismissable
 dialog with `notes` in it, and **Download** hands `apkUrl` to the browser. Nothing is downloaded and

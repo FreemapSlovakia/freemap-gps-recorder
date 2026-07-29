@@ -26,6 +26,9 @@ class PointStore private constructor(context: Context) : SQLiteOpenHelper(
 
     private var insert: SQLiteStatement? = null
 
+    private val prefs =
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -88,6 +91,33 @@ class PointStore private constructor(context: Context) : SQLiteOpenHelper(
 
     fun maxSeq(): Long = DatabaseUtils.longForQuery(readableDatabase, SELECT_MAX_SEQ, null)
 
+    /**
+     * How many times the track has been thrown away. A client holding a copy compares this against
+     * what it saw last: unchanged means its points are still the same points, and a change means the
+     * track it holds no longer exists and has to be fetched again from scratch.
+     */
+    fun generation(): Long = prefs.getLong(KEY_GENERATION, 0L)
+
+    /**
+     * Drops every recorded point and returns the new [generation].
+     *
+     * `seq` is AUTOINCREMENT, so the next fix carries on above the highest id ever handed out rather
+     * than restarting at 1. That is what stops a client polling with a stale `since` from being
+     * served a *different* set of points under ids it already believes it has.
+     *
+     * VACUUM is the point of the exercise rather than housekeeping: deleted rows would otherwise
+     * leave the file as large as the track that was meant to be gone.
+     */
+    @Synchronized
+    fun clear(): Long {
+        val db = writableDatabase
+        db.delete("points", null, null)
+        db.execSQL("VACUUM")
+        val generation = generation() + 1
+        prefs.edit().putLong(KEY_GENERATION, generation).commit()
+        return generation
+    }
+
     private fun Cursor.toPoint() = Point(
         seq = getLong(0),
         ts = getLong(1),
@@ -106,6 +136,9 @@ class PointStore private constructor(context: Context) : SQLiteOpenHelper(
     companion object {
         const val DB_NAME = "track.db"
         private const val DB_VERSION = 1
+
+        private const val PREFS = "track"
+        private const val KEY_GENERATION = "generation"
 
         private const val INSERT_SQL =
             "INSERT INTO points (ts, lat, lon, altitude, accuracy, speed, bearing) " +

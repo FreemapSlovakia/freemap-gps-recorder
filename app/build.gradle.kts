@@ -95,14 +95,92 @@ android {
     }
 }
 
+val apiSource = file("src/main/java/sk/freemap/tracker/TrackerApi.kt")
+val apiDoc = rootProject.file("API.md")
+
+/**
+ * API.md is the published contract for the local HTTP API, and prose rots silently — an endpoint
+ * gets added and the document goes on describing the API as it was six commits ago. This compares
+ * the names in the two and fails on any disagreement.
+ *
+ * It checks names, not meaning: it can tell that `DELETE /track` exists and is written down, not
+ * that what is written down about it is true. The prose still has to be kept honest by hand.
+ */
+tasks.register("checkApiDocs") {
+    description = "Fails when API.md and TrackerApi.kt disagree about the HTTP surface."
+    group = "verification"
+    inputs.file(apiSource)
+    inputs.file(apiDoc)
+    outputs.file(layout.buildDirectory.file("tmp/checkApiDocs.stamp"))
+
+    doLast {
+        val source = apiSource.readText()
+        val doc = apiDoc.readText()
+        val problems = mutableListOf<String>()
+
+        // Endpoint headings in the document read `### GET /track`.
+        val headings = Regex("""(?m)^### ([A-Z]+) (/\w+)$""").findAll(doc)
+            .map { it.groupValues[1] to it.groupValues[2] }
+            .toList()
+
+        // Paths, from the `when (session.uri)` route table.
+        val routed = source.substringAfter("private fun route(").substringBefore("// --- endpoints")
+        val codePaths = Regex("""\"(/\w+)\"""").findAll(routed).map { it.groupValues[1] }.toSortedSet()
+        val docPaths = headings.map { it.second }.toSortedSet()
+        (codePaths - docPaths).forEach { problems += "$it is routed but not documented in API.md" }
+        (docPaths - codePaths).forEach { problems += "$it is documented in API.md but not routed" }
+
+        // Methods, from the preflight header — the list a browser is told it may use.
+        val allowed = Regex("""Access-Control-Allow-Methods", "([^"]+)"""").find(source)
+        if (allowed == null) {
+            problems += "no Access-Control-Allow-Methods header found in TrackerApi.kt"
+        } else {
+            val corsMethods = allowed.groupValues[1].split(",").map { it.trim() }.toSortedSet()
+            // OPTIONS is answered for every path rather than documented per endpoint.
+            val docMethods = (headings.map { it.first } + "OPTIONS").toSortedSet()
+            (corsMethods - docMethods).forEach { problems += "$it is allowed by CORS but no endpoint documents it" }
+            (docMethods - corsMethods).forEach { problems += "$it is documented but missing from Access-Control-Allow-Methods" }
+        }
+
+        // Every JSON key statusJson emits has to have a row of its own in the field table under
+        // `### GET /status` — a passing mention in prose or in the example does not count. Nested
+        // keys are documented as `version.code`, hence splitting on the dot.
+        val statusFn = source.substringAfter("private fun statusJson(").substringBefore("private fun quoted(")
+        val codeKeys = Regex("""\\"(\w+)\\":""").findAll(statusFn).map { it.groupValues[1] }.toSortedSet()
+        val statusSection = doc.substringAfter("### GET /status").substringBefore("\n### ")
+        val docFields = Regex("""(?m)^\| `([\w.]+)`""").findAll(statusSection)
+            .flatMap { it.groupValues[1].split(".").asSequence() }
+            .toSet()
+        (codeKeys - docFields).forEach {
+            problems += "GET /status returns \"$it\", which has no row in the API.md field table"
+        }
+
+        if (problems.isNotEmpty()) {
+            throw GradleException(
+                problems.joinToString("\n  - ", "API.md is out of sync with TrackerApi.kt:\n  - ")
+            )
+        }
+        logger.lifecycle(
+            "checkApiDocs: ${codePaths.size} endpoints, ${codeKeys.size} status fields, all documented"
+        )
+    }
+}
+
+tasks.named("check") {
+    dependsOn("checkApiDocs")
+}
+
 /**
  * Copies the release APK out under the name the update manifest's `apkUrl` points at — the version
  * has to be in the filename, since the server keeps several of them side by side.
+ *
+ * The doc check is a dependency rather than a separate step anyone has to remember: this is the task
+ * that produces a publishable artefact, so it is the last honest moment to notice drift.
  */
 tasks.register<Copy>("releaseApk") {
     description = "Builds the release APK and copies it out as freemap-recorder-<version>.apk."
     group = "build"
-    dependsOn("assembleRelease")
+    dependsOn("assembleRelease", "checkApiDocs")
     from(layout.buildDirectory.dir("outputs/apk/release")) {
         include("*.apk")
     }

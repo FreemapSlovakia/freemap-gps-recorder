@@ -120,80 +120,39 @@ The guidance says so rather than repeating the folklore.
 
 ## Local HTTP API
 
-The app serves a small HTTP API on **`127.0.0.1:8378`**, so a page on freemap.sk can follow
-the recording as it happens. It is bound to loopback only — never `0.0.0.0` — so it is not reachable
-from the LAN, and it lives in the app process, which the foreground service keeps alive while
-recording. The server comes up with the process rather than with the recording, because `POST /start`
-has to be answerable before anything is being recorded.
+The app serves a small HTTP API on **`127.0.0.1:8378`**, so a page on freemap.sk can follow the
+recording as it happens, and start or stop one.
 
-| endpoint | what it does |
-| --- | --- |
-| `GET /track?since=N` | every point with `seq > N` as JSON, in `seq` order. Omit `since` for the whole track — this is the cold-open catch-up |
-| `GET /stream` | Server-Sent Events tail, one event per fix, `id:` set to the point's `seq` |
-| `POST /start` | start recording; returns the status object |
-| `POST /stop` | stop recording; returns the status object |
-| `GET /status` | recording state, `lastSeq`, point count, recorder `version`, `port`/`portEcho`, and the whole [setup](#setup) state |
+**[API.md](API.md) is the reference** — every endpoint, parameter, status code and response shape,
+plus the CORS allowlist. It is checked against the code by `./gradlew checkApiDocs`, which `check`
+and `releaseApk` both depend on, so it cannot quietly fall behind. Do not re-document endpoints here:
+one description of the API is the point.
 
-Points are encoded positionally to keep long tracks small:
+What belongs here is why it is shaped this way. It is bound to loopback only — never `0.0.0.0` — so
+it is not reachable from the LAN, and it lives in the app process, which the foreground service keeps
+alive while recording. The server comes up with the process rather than with the recording, because
+`POST /start` has to be answerable before anything is being recorded.
 
-```json
-{"fields":["seq","ts","lat","lon","alt","acc","spd","brg"],
- "points":[[550,1785174195365,48.7062033,21.2367267,279.2,1.9,0.0,null]]}
-```
+Points are encoded positionally rather than as objects because a long track is mostly repeated key
+names otherwise; coordinates are rounded to 7 decimals and metre-scale values to 2, past which it is
+float noise that still costs bytes on every point. An absent field is `null` and never `0`, since an
+unreported speed and a genuine standstill are different facts.
 
-Coordinates are rounded to 7 decimals and metre-scale values to 2 — past that it is float noise, and
-over a long track those digits add up. Absent fields are `null`, never `0`.
+`seq` is SQLite `AUTOINCREMENT`, so ids are never reused even after `DELETE /track`. That is what
+makes clearing safe for clients: a stale `?since=` can come back empty, but it can never come back
+with *different* points wearing ids the client already has. `generation` in `/status` is the signal
+that a clear happened at all.
 
-`/status` reports every checklist item, so a page can say "the recorder needs setup" instead of
-watching `POST /start` fail for reasons it cannot name:
-
-```json
-{"recording":false,"lastSeq":24,"count":24,"version":{"code":3,"name":"0.3"},
- "port":8378,"portEcho":null,
- "permissions":{"fine":true,"background":true,"notifications":false},
- "batteryExempt":true,
- "oem":{"vendor":"xiaomi","needed":true,"acknowledged":false},
- "canRecord":false,"setupComplete":false}
-```
-
-`canRecord` is the hard gate — the same one the Start button uses. `setupComplete` additionally
-covers the items that only make a long recording survive. `oem.needed` is false on manufacturers
-that leave background apps alone, and `oem.vendor` is then `null`.
-
-`version` is which recorder is answering, read back from the installed package. A page can compare
-`version.code` against what it needs and say so, rather than calling an endpoint that a build this
-old does not have.
-
-`/stream` honours `Last-Event-ID` on reconnect: it replays the points after that id, then continues
-live. The subscription is registered *before* the replay query runs, so a fix recorded during the
-replay is queued rather than lost, and the `seq` filter drops the overlap. A client that stops
-reading gets its connection closed once the buffer fills, rather than a silent hole in its tail —
-`EventSource` then reconnects and the replay path fills the gap.
-
-CORS is locked to the `ALLOWED_ORIGINS` allowlist in `TrackerApi.kt`:
-
-| origin | |
-| --- | --- |
-| `https://freemap.sk` | |
-| `https://www.freemap.sk` | |
-| `https://www.freemap.eu` | |
-| `local.freemap.sk` | any port, and http as well as https — a dev server picks its own port |
-
-`Access-Control-Allow-Origin` takes one origin and never a list, so the caller's own `Origin` is
-matched against the list and echoed back, with `Vary: Origin` sent on every response because the
-answer now depends on the request. An origin that is not on the list gets no header at all, and the
-browser refuses the response; a request with no `Origin` — curl, the address bar — is unaffected.
-Matching is exact, and an origin is scheme *and* host *and* port, so a new hostname for the site
-means a new entry here even if it is the same site.
-
-Preflights also answer `Access-Control-Allow-Private-Network: true`, which older Chrome requires
-under the Private Network Access model and newer Chrome ignores under Local Network Access.
+CORS is an allowlist because any site you visit could otherwise talk to a recorder running on your
+phone. The list lives in `ALLOWED_ORIGINS` in `TrackerApi.kt`; adding a hostname means adding it
+there, since matching is exact on scheme, host and port.
 
 ```sh
 adb forward tcp:8378 tcp:8378          # then reach it from the host
 curl 'http://127.0.0.1:8378/track?since=0'
 curl -N http://127.0.0.1:8378/stream
 curl -X POST http://127.0.0.1:8378/start
+curl -X DELETE http://127.0.0.1:8378/track
 ```
 
 ## Launching from the web
@@ -414,6 +373,21 @@ back on `/status`, `/track` and `/stream` alike, and on the `OPTIONS` preflight.
 get no `Access-Control-Allow-Origin` at all — nor does `http://www.freemap.sk` or
 `https://www.freemap.eu:8443`, which is the point of matching scheme and port and not just the host.
 `Vary: Origin` is on every response including the ones with no origin to echo.
+
+`DELETE /track` was exercised on the minified 0.4 build. Clearing 283 points leaves `count` and
+`lastSeq` at `0` and takes `generation` from `0` to `1`; `GET /track` then returns an empty `points`
+array. The next fix recorded is **`seq` 284, not 1** — the AUTOINCREMENT guarantee the whole
+clear-safety argument rests on. Asked for during a recording it answers `409` with
+`"error":"recording"` and deletes nothing (`count` unchanged at 2), and a second clear after stopping
+takes `generation` to `2`. The preflight advertises `GET, POST, DELETE, OPTIONS`, an allowed origin
+gets the header on the `DELETE` response too, and `PUT /track` is `405`.
+
+`checkApiDocs` was checked by breaking API.md three ways and confirming each one fails the build:
+renaming an endpoint heading (`/stream` routed but not documented, `/streaming` documented but not
+routed), renaming a method (`DELETE` allowed by CORS with nothing documenting it), and deleting the
+`generation` row from the status field table. The last one is why the field check reads table rows
+rather than backticked words — the first version of it passed, because a fenced code block breaks
+backtick pairing and the JSON example still contained the word.
 
 Two things were not driven end to end. The manifest URL is not published yet, so the only server this
 has spoken to is a local one. And the install-source prompt itself is Android's, on a first browser

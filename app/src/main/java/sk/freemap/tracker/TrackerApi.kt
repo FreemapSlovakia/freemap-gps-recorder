@@ -46,7 +46,11 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
             return newFixedLengthResponse(Response.Status.NO_CONTENT, null, null)
         }
         return when (session.uri) {
-            "/track" -> if (method == Method.GET) track(session) else notAllowed()
+            "/track" -> when (method) {
+                Method.GET -> track(session)
+                Method.DELETE -> clearTrack()
+                else -> notAllowed()
+            }
             "/stream" -> if (method == Method.GET) stream(session) else notAllowed()
             "/status" -> if (method == Method.GET) json(Response.Status.OK, statusJson()) else notAllowed()
             "/start" -> if (method == Method.POST) startRecording() else notAllowed()
@@ -87,6 +91,21 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
         return response
     }
 
+    /**
+     * Throws the whole track away. Refused while recording rather than racing the writer: the
+     * recording thread is appending as this runs, and a client tailing `/stream` would go on being
+     * handed points belonging to a track the caller has been told is gone. Stop first, then clear.
+     */
+    private fun clearTrack(): Response {
+        if (TrackerState.recording) {
+            return json(Response.Status.CONFLICT, statusJson("recording"))
+        }
+        store.clear()
+        TrackerState.pointCount = 0
+        TrackerState.lastSeq = 0
+        return json(Response.Status.OK, statusJson())
+    }
+
     private fun startRecording(): Response {
         // Same gate as the Start button: no location means nothing to record, and no notification
         // permission means a recording nobody can see is running. `canRecord` in the body says so.
@@ -123,7 +142,8 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
      * `setupComplete` additionally covers the items that only make a long recording survive.
      *
      * `version` is here so a page can tell which recorder it is talking to, and say "too old for
-     * this" rather than calling an endpoint that will not answer.
+     * this" rather than calling an endpoint that will not answer. `generation` is how it notices
+     * that the track it holds was thrown away — see [PointStore.generation].
      */
     private fun statusJson(error: String? = null): String {
         val vendor = Vendor.current
@@ -131,6 +151,7 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
         sb.append("{\"recording\":").append(TrackerState.recording)
         sb.append(",\"lastSeq\":").append(store.maxSeq())
         sb.append(",\"count\":").append(store.count())
+        sb.append(",\"generation\":").append(store.generation())
         sb.append(",\"version\":{\"code\":").append(AppVersion.code(app))
         sb.append(",\"name\":")
         quoted(sb, AppVersion.name(app))
@@ -180,7 +201,7 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
             response.addHeader("Access-Control-Allow-Origin", origin)
         }
         if (preflight) {
-            response.addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            response.addHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
             response.addHeader("Access-Control-Allow-Headers", "Content-Type, Last-Event-ID, Cache-Control")
             response.addHeader("Access-Control-Max-Age", "86400")
             // Chrome's Private Network Access model gates public-origin -> loopback requests on

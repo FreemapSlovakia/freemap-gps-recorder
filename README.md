@@ -209,13 +209,13 @@ URL for anyone who would rather point [Obtainium](https://obtainium.imranr.dev/)
 
 The app checks for a newer version against a small JSON manifest, at
 `tracker.updateManifestUrl` (`gradle.properties`, baked in as `BuildConfig.UPDATE_MANIFEST_URL`) —
-currently `https://download.freemap.sk/freemap-recorder/latest.json`:
+currently `https://download.freemap.sk/freemap-tracker/latest.json`:
 
 ```json
 {
   "versionCode": 5,
   "versionName": "0.5",
-  "apkUrl": "https://download.freemap.sk/freemap-recorder/freemap-recorder.apk",
+  "apkUrl": "https://download.freemap.sk/freemap-tracker/freemap-recorder.apk",
   "notes": "Clear the recorded track from the website, and a documented local API.",
   "minSupportedVersionCode": 1
 }

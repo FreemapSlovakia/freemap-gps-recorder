@@ -1,4 +1,4 @@
-package sk.freemap.tracker
+package sk.freemap.gpsrecorder
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -30,7 +30,7 @@ import com.google.android.gms.location.Priority
  * thread, and a partial wake lock is held for the duration so writes keep landing with the screen
  * off.
  */
-class TrackingService : Service() {
+class RecordingService : Service() {
 
     private var store: PointStore? = null
     private var client: FusedLocationProviderClient? = null
@@ -47,8 +47,8 @@ class TrackingService : Service() {
             val store = store ?: return
             for (loc in result.locations) {
                 val point = store.append(loc)
-                TrackerState.lastSeq = point.seq
-                TrackerState.pointCount++
+                RecorderState.lastSeq = point.seq
+                RecorderState.pointCount++
                 PointBus.publish(point)
             }
             maybeRefreshNotification()
@@ -94,9 +94,9 @@ class TrackingService : Service() {
         tracking = true
 
         val store = PointStore.get(this).also { this.store = it }
-        TrackerState.pointCount = store.count()
-        TrackerState.lastSeq = store.maxSeq()
-        TrackerState.recording = true
+        RecorderState.pointCount = store.count()
+        RecorderState.lastSeq = store.maxSeq()
+        RecorderState.recording = true
 
         startInForeground()
 
@@ -122,7 +122,7 @@ class TrackingService : Service() {
         val client = LocationServices.getFusedLocationProviderClient(this).also { this.client = it }
         try {
             client.requestLocationUpdates(request, callback, worker.looper)
-            Log.i(TAG, "tracking started, ${TrackerState.pointCount} points already stored")
+            Log.i(TAG, "tracking started, ${RecorderState.pointCount} points already stored")
         } catch (e: SecurityException) {
             Log.e(TAG, "location permission missing, stopping", e)
             stopTracking()
@@ -133,7 +133,7 @@ class TrackingService : Service() {
     private fun stopTracking() {
         if (!tracking) return
         tracking = false
-        TrackerState.recording = false
+        RecorderState.recording = false
 
         client?.removeLocationUpdates(callback)
         client = null
@@ -148,7 +148,7 @@ class TrackingService : Service() {
         store = null
 
         stopForeground(STOP_FOREGROUND_REMOVE)
-        Log.i(TAG, "tracking stopped at ${TrackerState.pointCount} points")
+        Log.i(TAG, "tracking stopped at ${RecorderState.pointCount} points")
     }
 
     private fun startInForeground() {
@@ -187,14 +187,14 @@ class TrackingService : Service() {
         val stop = PendingIntent.getService(
             this,
             1,
-            Intent(this, TrackingService::class.java).setAction(ACTION_STOP),
+            Intent(this, RecordingService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE,
         )
 
         val builder = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_track)
             .setContentTitle(getString(R.string.notif_title))
-            .setContentText(getString(R.string.notif_text, TrackerState.pointCount))
+            .setContentText(getString(R.string.notif_text, RecorderState.pointCount))
             .setContentIntent(open)
             .setCategory(Notification.CATEGORY_SERVICE)
             .setOngoing(true)
@@ -230,8 +230,8 @@ class TrackingService : Service() {
     }
 
     companion object {
-        private const val TAG = "TrackingService"
-        private const val WAKE_LOCK_TAG = "freemap-tracker"
+        private const val TAG = "RecordingService"
+        private const val WAKE_LOCK_TAG = "freemap-gps-recorder"
         private const val CHANNEL_ID = "recording"
         private const val NOTIFICATION_ID = 1
 
@@ -240,15 +240,15 @@ class TrackingService : Service() {
         private const val MIN_INTERVAL_MS = 1_000L
         private const val NOTIFICATION_REFRESH_MS = 3_000L
 
-        const val ACTION_STOP = "sk.freemap.tracker.STOP"
+        const val ACTION_STOP = "sk.freemap.gpsrecorder.STOP"
 
         fun start(context: Context) {
-            context.startForegroundService(Intent(context, TrackingService::class.java))
+            context.startForegroundService(Intent(context, RecordingService::class.java))
         }
 
         fun stop(context: Context) {
             context.startService(
-                Intent(context, TrackingService::class.java).setAction(ACTION_STOP)
+                Intent(context, RecordingService::class.java).setAction(ACTION_STOP)
             )
         }
     }

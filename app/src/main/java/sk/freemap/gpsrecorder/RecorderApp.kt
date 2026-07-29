@@ -1,4 +1,4 @@
-package sk.freemap.tracker
+package sk.freemap.gpsrecorder
 
 import android.app.Application
 
@@ -7,10 +7,10 @@ import android.app.Application
  * answerable while nothing is being recorded yet. Once a recording is running, the foreground
  * service is what keeps this process — and therefore the server — alive with the screen off.
  */
-class TrackerApp : Application() {
+class RecorderApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        TrackerApi.ensureRunning(this)
+        RecorderApi.ensureRunning(this)
     }
 }

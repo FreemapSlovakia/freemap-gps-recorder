@@ -1,4 +1,4 @@
-package sk.freemap.tracker
+package sk.freemap.gpsrecorder
 
 import android.Manifest
 import android.content.Context

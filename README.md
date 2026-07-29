@@ -1,4 +1,4 @@
-# Freemap Tracker
+# Freemap GPS Recorder
 
 Android GPS track recorder. Records a high-accuracy location stream from a foreground service and
 appends every fix to on-disk SQLite, so recording survives backgrounding and screen lock.
@@ -16,12 +16,12 @@ setup checklist. Track management and upload come later.
 ```sh
 ./gradlew assembleDebug     # APK in app/build/outputs/apk/debug/
 ./gradlew installDebug      # build and install on the attached device
-./gradlew releaseApk        # signed, shrunk, as app/build/distributions/freemap-recorder-<version>.apk
+./gradlew releaseApk        # signed, shrunk, as app/build/distributions/freemap-gps-recorder-<version>.apk
 ```
 
 Toolchain: AGP 9.2.1, Gradle 9.4.1, JDK 17+, compileSdk/targetSdk 36, minSdk 26.
 
-The version lives in `gradle.properties` — `tracker.versionCode` and `tracker.versionName` — and
+The version lives in `gradle.properties` — `recorder.versionCode` and `recorder.versionName` — and
 everything else derives from it: the manifest, the APK filename, and `version` in `GET /status`.
 `versionCode` has to go up for every published APK, because it is what the update check compares
 against the server's manifest.
@@ -43,10 +43,10 @@ beside the project (gitignored — see `keystore.properties.example`), then `~/.
 
 | variable | property |
 | --- | --- |
-| `FREEMAP_TRACKER_STORE_FILE` | `tracker.storeFile` |
-| `FREEMAP_TRACKER_STORE_PASSWORD` | `tracker.storePassword` |
-| `FREEMAP_TRACKER_KEY_ALIAS` | `tracker.keyAlias` |
-| `FREEMAP_TRACKER_KEY_PASSWORD` | `tracker.keyPassword` |
+| `FREEMAP_GPS_RECORDER_STORE_FILE` | `recorder.storeFile` |
+| `FREEMAP_GPS_RECORDER_STORE_PASSWORD` | `recorder.storePassword` |
+| `FREEMAP_GPS_RECORDER_KEY_ALIAS` | `recorder.keyAlias` |
+| `FREEMAP_GPS_RECORDER_KEY_PASSWORD` | `recorder.keyPassword` |
 
 With none of them set the build still runs and says so, producing an unsigned APK. The keystore
 itself never lives in the repository, and `*.jks`, `*.keystore` and `keystore.properties` are
@@ -60,7 +60,7 @@ ever lost or compromised.
 
 ## How it works
 
-`TrackingService` is a foreground service with `foregroundServiceType="location"` and a persistent
+`RecordingService` is a foreground service with `foregroundServiceType="location"` and a persistent
 notification carrying a **Stop** action. It requests fixes at 1 Hz with
 `PRIORITY_HIGH_ACCURACY` and holds a partial wake lock for the duration of the recording — without
 it, delivery becomes unreliable once the screen goes off.
@@ -88,7 +88,7 @@ to record, and without the second a recording would run with no visible sign of 
 thing a foreground service exists to prevent. `POST /start` refuses the same two with `403` and
 `"error":"setup incomplete"`.
 
-`TrackingService` checks the same gate in `onStartCommand` and stops instead of starting. That is not
+`RecordingService` checks the same gate in `onStartCommand` and stops instead of starting. That is not
 a formality: revoking a permission kills the app process, `START_STICKY` has the system restart the
 service, and Play services does not fail the location subscription synchronously — so without the
 check the service comes back and sits in the notification claiming to record while appending nothing.
@@ -114,7 +114,7 @@ done, kept in `SharedPreferences`, and it is only shown at all on those manufact
 Note what this item is *not*: autostart. Autostart governs whether a vendor ROM may launch an app
 that is not running — on boot, from a broadcast, from another app. A recording the user started is
 already running, so autostart is not what keeps it alive; the per-app battery mode is. It matters
-here only in one place, and second-hand: `TrackingService` is `START_STICKY`, so a process kill has
+here only in one place, and second-hand: `RecordingService` is `START_STICKY`, so a process kill has
 the system try to start the service again, and *that* is a background start a vendor can refuse.
 The guidance says so rather than repeating the folklore.
 
@@ -144,7 +144,7 @@ with *different* points wearing ids the client already has. `generation` in `/st
 that a clear happened at all.
 
 CORS is an allowlist because any site you visit could otherwise talk to a recorder running on your
-phone. The list lives in `ALLOWED_ORIGINS` in `TrackerApi.kt`; adding a hostname means adding it
+phone. The list lives in `ALLOWED_ORIGINS` in `RecorderApi.kt`; adding a hostname means adding it
 there, since matching is exact on scheme, host and port.
 
 ```sh
@@ -157,12 +157,12 @@ curl -X DELETE http://127.0.0.1:8378/track
 
 ## Launching from the web
 
-A page can link straight into the recorder with the `freemap-recorder://` scheme:
+A page can link straight into the recorder with the `freemap-gps-recorder://` scheme:
 
 | link | what happens |
 | --- | --- |
-| `freemap-recorder://start` | starts recording and immediately hands focus back to the browser |
-| anything else, e.g. `freemap-recorder://open` | just opens the app |
+| `freemap-gps-recorder://start` | starts recording and immediately hands focus back to the browser |
+| anything else, e.g. `freemap-gps-recorder://open` | just opens the app |
 
 `start` is the useful one: the Activity fires up the foreground service and then gets out of the
 way — it finishes when the link created the task, and moves the task to the back when the app was
@@ -182,7 +182,7 @@ confirms that the app answering there is the one the link just launched, and not
 bound to that port. A mismatch with `port` means the page and the app disagree — trust `port`.
 
 ```js
-location.href = 'freemap-recorder://start?port=8378'
+location.href = 'freemap-gps-recorder://start?port=8378'
 // then, on return to the page:
 const s = await (await fetch('http://127.0.0.1:8378/status')).json()
 // s.recording === true, s.portEcho === 8378
@@ -208,14 +208,14 @@ over the top and keeps the recorded track — and that uninstalling does not —
 URL for anyone who would rather point [Obtainium](https://obtainium.imranr.dev/) at it.
 
 The app checks for a newer version against a small JSON manifest, at
-`tracker.updateManifestUrl` (`gradle.properties`, baked in as `BuildConfig.UPDATE_MANIFEST_URL`) —
-currently `https://download.freemap.sk/freemap-tracker/latest.json`:
+`recorder.updateManifestUrl` (`gradle.properties`, baked in as `BuildConfig.UPDATE_MANIFEST_URL`) —
+currently `https://download.freemap.sk/freemap-gps-recorder/latest.json`:
 
 ```json
 {
   "versionCode": 5,
   "versionName": "0.5",
-  "apkUrl": "https://download.freemap.sk/freemap-tracker/freemap-recorder.apk",
+  "apkUrl": "https://download.freemap.sk/freemap-gps-recorder/freemap-gps-recorder.apk",
   "notes": "Clear the recorded track from the website, and a documented local API.",
   "minSupportedVersionCode": 1
 }
@@ -223,18 +223,18 @@ currently `https://download.freemap.sk/freemap-tracker/latest.json`:
 
 **That file is generated, not hand-written.** `./gradlew releaseApk` writes it to
 `app/build/distributions/latest.json` from the same properties the APK is built from, so it cannot
-advertise a version that was never built. Publishing a release is: set `tracker.releaseNotes`, bump
+advertise a version that was never built. Publishing a release is: set `recorder.releaseNotes`, bump
 the version, run `./gradlew releaseApk`, then upload both files — the APK as
-`freemap-recorder.apk` and the manifest as `latest.json`. Upload the APK **first**, or a phone that
+`freemap-gps-recorder.apk` and the manifest as `latest.json`. Upload the APK **first**, or a phone that
 checks in between will offer a download that 404s.
 
 | field | | from |
 | --- | --- | --- |
-| `versionCode` | **required** | `tracker.versionCode` |
-| `apkUrl` | **required**, must begin with `https://` | `tracker.apkUrl` |
-| `versionName` | optional; defaults to `versionCode` as text | `tracker.versionName` |
-| `notes` | optional; defaults to empty | `tracker.releaseNotes` |
-| `minSupportedVersionCode` | optional; defaults to `0` | `tracker.minSupportedVersionCode` |
+| `versionCode` | **required** | `recorder.versionCode` |
+| `apkUrl` | **required**, must begin with `https://` | `recorder.apkUrl` |
+| `versionName` | optional; defaults to `versionCode` as text | `recorder.versionName` |
+| `notes` | optional; defaults to empty | `recorder.releaseNotes` |
+| `minSupportedVersionCode` | optional; defaults to `0` | `recorder.minSupportedVersionCode` |
 
 Two things to get right when publishing. The manifest must not be cached for long, or an update sits
 invisible behind a stale copy — the app only asks once a day as it is. And if `apkUrl` stays at one
@@ -260,7 +260,7 @@ When it checks:
 - **never during a recording**, including a check the user asks for, which answers *not while
   recording* instead. An update prompt over a running track is an interruption of the one thing the
   app exists to do
-- not while handing focus back to a browser after a `freemap-recorder://` link
+- not while handing focus back to a browser after a `freemap-gps-recorder://` link
 - **Skip this one** remembers that `versionCode`, so an offer declined for good is not repeated
   tomorrow. A manual check ignores that, and so does an obsolete build
 
@@ -274,7 +274,7 @@ To point a build at a manifest of your own:
 ```sh
 python3 -m http.server 8099 --bind 127.0.0.1     # serving latest.json
 adb reverse tcp:8099 tcp:8099
-./gradlew releaseApk -Ptracker.updateManifestUrl=http://127.0.0.1:8099/latest.json
+./gradlew releaseApk -Precorder.updateManifestUrl=http://127.0.0.1:8099/latest.json
 ```
 
 That is what the loopback exception in `network_security_config.xml` is for. Cleartext is off
@@ -301,7 +301,7 @@ stationary fix is not mistaken for one heading due north.
 To inspect a recording on a debug build:
 
 ```sh
-adb shell run-as sk.freemap.tracker cat databases/track.db > track.db
+adb shell run-as sk.freemap.gpsrecorder cat databases/track.db > track.db
 sqlite3 track.db 'SELECT * FROM points ORDER BY seq DESC LIMIT 10;'
 ```
 
@@ -325,7 +325,7 @@ The HTTP API was verified on the same device, with the app backgrounded througho
   611, with no gap or duplicate at the handover
 - with nothing recording, `: ping` heartbeats arrive every 15 s
 
-`freemap-recorder://start` was verified on the same device with Firefox as the default browser, on a
+`freemap-gps-recorder://start` was verified on the same device with Firefox as the default browser, on a
 cold process and with the app already open, and with the battery-optimisation exemption *removed*:
 recording started in both cases and the browser was the resumed activity again within seconds, with
 no dialog in between. When the app was already open its task survived the hand-back; when the link
@@ -345,7 +345,7 @@ over adb and the phone cannot be driven by script:
   checklist and the banner on resume — nothing else prompted it
 - `POST /start` with notifications revoked answered `403` with `"canRecord":false` and
   `"error":"setup incomplete"`, then `200` once granted
-- `freemap-recorder://start` still hands focus straight back when setup is complete; with location
+- `freemap-gps-recorder://start` still hands focus straight back when setup is complete; with location
   revoked it keeps the app up and opens the first blocking item instead
 
 Revoking location mid-recording is what turned up the zombie-service case above: the service came
@@ -362,7 +362,7 @@ first) reports `versionCode=2`, `signatures=PackageSignatures{version:3}`, and `
 `"version":{"code":2,"name":"0.2"}`. Recording under R8 behaves as it does unshrunk: the checklist,
 the disclosure screen and both system prompts render, and with the app backgrounded the service runs
 `isForeground=true types=0x8` and appends contiguous points. A screen-off run started from a
-`freemap-recorder://start` link recorded `seq` 1–283 over 408 s with nothing missing and no gap above
+`freemap-gps-recorder://start` link recorded `seq` 1–283 over 408 s with nothing missing and no gap above
 3.4 s, and `POST /stop` left no service record behind. The positional `/track` encoding survives
 shrinking, which is the one thing to watch there.
 

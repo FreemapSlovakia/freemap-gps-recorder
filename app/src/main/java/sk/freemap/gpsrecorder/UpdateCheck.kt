@@ -1,4 +1,4 @@
-package sk.freemap.tracker
+package sk.freemap.gpsrecorder
 
 import android.content.Context
 import android.net.ConnectivityManager
@@ -76,7 +76,7 @@ object UpdateCheck {
     }
 
     private fun check(app: Context, manual: Boolean): Update? {
-        if (TrackerState.recording) return null
+        if (RecorderState.recording) return null
         if (!manual && !due(app)) return null
 
         // Counted as spent whether or not it succeeds, so a server that is down cannot turn "once a

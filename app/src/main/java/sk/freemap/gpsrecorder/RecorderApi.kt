@@ -1,4 +1,4 @@
-package sk.freemap.tracker
+package sk.freemap.gpsrecorder
 
 import android.content.Context
 import android.os.SystemClock
@@ -18,7 +18,7 @@ import java.io.IOException
  * It runs in the app process, which the foreground service keeps alive, so it stays reachable with
  * the screen off for as long as a recording is in progress.
  */
-class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
+class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
 
     private val app = context.applicationContext
     private val store = PointStore.get(app)
@@ -97,12 +97,12 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
      * handed points belonging to a track the caller has been told is gone. Stop first, then clear.
      */
     private fun clearTrack(): Response {
-        if (TrackerState.recording) {
+        if (RecorderState.recording) {
             return json(Response.Status.CONFLICT, statusJson("recording"))
         }
         store.clear()
-        TrackerState.pointCount = 0
-        TrackerState.lastSeq = 0
+        RecorderState.pointCount = 0
+        RecorderState.lastSeq = 0
         return json(Response.Status.OK, statusJson())
     }
 
@@ -112,9 +112,9 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
         if (!Setup.canRecord(app)) {
             return json(Response.Status.FORBIDDEN, statusJson("setup incomplete"))
         }
-        if (!TrackerState.recording) {
+        if (!RecorderState.recording) {
             try {
-                TrackingService.start(app)
+                RecordingService.start(app)
             } catch (e: Exception) {
                 // Android 12+ refuses a background foreground-service start unless the app is
                 // exempt from battery optimisation — which is what batteryExempt reports.
@@ -127,8 +127,8 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
     }
 
     private fun stopRecording(): Response {
-        if (TrackerState.recording) {
-            TrackingService.stop(app)
+        if (RecorderState.recording) {
+            RecordingService.stop(app)
             awaitRecording(false)
         }
         return json(Response.Status.OK, statusJson())
@@ -148,7 +148,7 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
     private fun statusJson(error: String? = null): String {
         val vendor = Vendor.current
         val sb = StringBuilder(320)
-        sb.append("{\"recording\":").append(TrackerState.recording)
+        sb.append("{\"recording\":").append(RecorderState.recording)
         sb.append(",\"lastSeq\":").append(store.maxSeq())
         sb.append(",\"count\":").append(store.count())
         sb.append(",\"generation\":").append(store.generation())
@@ -157,7 +157,7 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
         quoted(sb, AppVersion.name(app))
         sb.append('}')
         sb.append(",\"port\":").append(PORT)
-        sb.append(",\"portEcho\":").append(TrackerState.portEcho)
+        sb.append(",\"portEcho\":").append(RecorderState.portEcho)
         sb.append(",\"permissions\":{\"fine\":").append(Setup.fine(app))
         sb.append(",\"background\":").append(Setup.background(app))
         sb.append(",\"notifications\":").append(Setup.notifications(app))
@@ -219,7 +219,7 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
     /** Service start/stop is asynchronous; wait briefly so the response reports the settled state. */
     private fun awaitRecording(target: Boolean) {
         val deadline = SystemClock.elapsedRealtime() + STATE_TIMEOUT_MS
-        while (TrackerState.recording != target && SystemClock.elapsedRealtime() < deadline) {
+        while (RecorderState.recording != target && SystemClock.elapsedRealtime() < deadline) {
             try {
                 Thread.sleep(STATE_POLL_MS)
             } catch (e: InterruptedException) {
@@ -230,7 +230,7 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
     }
 
     companion object {
-        private const val TAG = "TrackerApi"
+        private const val TAG = "RecorderApi"
 
         /**
          * The origins allowed to talk to the recorder. Matched exactly, and an origin is scheme +
@@ -276,12 +276,12 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
         private const val STATE_POLL_MS = 25L
 
         @Volatile
-        private var instance: TrackerApi? = null
+        private var instance: RecorderApi? = null
 
         @Synchronized
         fun ensureRunning(context: Context) {
             if (instance != null) return
-            val api = TrackerApi(context)
+            val api = RecorderApi(context)
             try {
                 api.start(SOCKET_READ_TIMEOUT, false)
                 instance = api

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Freemap Tracker</string>
+    <string name="app_name">Freemap GPS Recorder</string>
 
     <string name="state_recording">Recording</string>
     <string name="state_idle">Not recording</string>
@@ -45,7 +45,7 @@
     <!-- Prompts -->
 
     <string name="rationale_title">Location while recording</string>
-    <string name="rationale_msg">Freemap Tracker records your location — including while the app is closed or not in use — for as long as a recording is running, and for no other reason.\n\nFixes are written to this device only, into the app\'s private storage. Nothing is uploaded anywhere.</string>
+    <string name="rationale_msg">Freemap GPS Recorder records your location — including while the app is closed or not in use — for as long as a recording is running, and for no other reason.\n\nFixes are written to this device only, into the app\'s private storage. Nothing is uploaded anywhere.</string>
     <string name="rationale_continue">Continue</string>
 
     <string name="background_title">Allow all the time</string>
@@ -101,20 +101,20 @@
     <!-- Vendors -->
 
     <string name="vendor_xiaomi">Xiaomi</string>
-    <string name="vendor_xiaomi_help">The one that matters: Settings → Apps → Manage apps → Freemap Tracker → Battery saver, set to No restrictions.\n\nIt also helps to lock the app in Recents, so clearing recent apps does not take the recording with it.\n\nAutostart, on the same app screen, is not what keeps a running recording alive — it only decides whether MIUI may start the app again after killing it. Worth switching on, but it is not the fix.</string>
+    <string name="vendor_xiaomi_help">The one that matters: Settings → Apps → Manage apps → Freemap GPS Recorder → Battery saver, set to No restrictions.\n\nIt also helps to lock the app in Recents, so clearing recent apps does not take the recording with it.\n\nAutostart, on the same app screen, is not what keeps a running recording alive — it only decides whether MIUI may start the app again after killing it. Worth switching on, but it is not the fix.</string>
 
     <string name="vendor_huawei">Huawei</string>
-    <string name="vendor_huawei_help">Open Phone Manager → App launch, switch Freemap Tracker from Manage automatically to Manage manually, and turn on Auto-launch, Secondary launch and Run in background.</string>
+    <string name="vendor_huawei_help">Open Phone Manager → App launch, switch Freemap GPS Recorder from Manage automatically to Manage manually, and turn on Auto-launch, Secondary launch and Run in background.</string>
 
     <string name="vendor_samsung">Samsung</string>
-    <string name="vendor_samsung_help">Open Settings → Battery → Background usage limits, turn off Put unused apps to sleep, and make sure Freemap Tracker is in neither the Sleeping nor the Deep sleeping list.</string>
+    <string name="vendor_samsung_help">Open Settings → Battery → Background usage limits, turn off Put unused apps to sleep, and make sure Freemap GPS Recorder is in neither the Sleeping nor the Deep sleeping list.</string>
 
     <string name="vendor_oppo">Oppo</string>
-    <string name="vendor_oppo_help">Open Settings → Battery → App battery management and allow Freemap Tracker to run in the background.\n\nThen, in the phone manager\'s Startup manager, allow it to auto-start.</string>
+    <string name="vendor_oppo_help">Open Settings → Battery → App battery management and allow Freemap GPS Recorder to run in the background.\n\nThen, in the phone manager\'s Startup manager, allow it to auto-start.</string>
 
     <string name="vendor_vivo">Vivo</string>
-    <string name="vendor_vivo_help">Open iManager → App manager → Autostart manager and enable Freemap Tracker.\n\nThen, under Battery → High background power consumption, allow it as well.</string>
+    <string name="vendor_vivo_help">Open iManager → App manager → Autostart manager and enable Freemap GPS Recorder.\n\nThen, under Battery → High background power consumption, allow it as well.</string>
 
     <string name="vendor_oneplus">OnePlus</string>
-    <string name="vendor_oneplus_help">Open Settings → Battery → Battery optimisation and set Freemap Tracker to Don\'t optimise.\n\nIf your version has Advanced optimisation, turn off Deep optimisation and Sleep standby optimisation.</string>
+    <string name="vendor_oneplus_help">Open Settings → Battery → Battery optimisation and set Freemap GPS Recorder to Don\'t optimise.\n\nIf your version has Advanced optimisation, turn off Deep optimisation and Sleep standby optimisation.</string>
 </resources>

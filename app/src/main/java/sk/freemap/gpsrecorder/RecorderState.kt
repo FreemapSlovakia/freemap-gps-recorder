@@ -1,10 +1,10 @@
-package sk.freemap.tracker
+package sk.freemap.gpsrecorder
 
 /**
- * Whatever the UI needs to render, published by [TrackingService]. Service and Activity live in
+ * Whatever the UI needs to render, published by [RecordingService]. Service and Activity live in
  * the same process, so a plain object is enough — no binding, no IPC.
  */
-object TrackerState {
+object RecorderState {
     @Volatile
     var recording: Boolean = false
 
@@ -15,7 +15,7 @@ object TrackerState {
     var lastSeq: Long = 0
 
     /**
-     * The port carried by the last `freemap-recorder://` link, echoed back by `GET /status`. It lets
+     * The port carried by the last `freemap-gps-recorder://` link, echoed back by `GET /status`. It lets
      * the page that opened the link confirm that the app answering on that port is the one it just
      * launched, rather than some other listener that happens to be bound there.
      */

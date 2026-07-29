@@ -14,6 +14,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "freemap-tracker"
+rootProject.name = "freemap-gps-recorder"
 
 include(":app")

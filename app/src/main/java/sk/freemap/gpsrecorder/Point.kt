@@ -1,4 +1,4 @@
-package sk.freemap.tracker
+package sk.freemap.gpsrecorder
 
 /**
  * One recorded fix, as it is handed to HTTP clients. Optional fields stay null when the platform

@@ -1,4 +1,4 @@
-# Freemap Recorder HTTP API
+# Freemap GPS Recorder HTTP API
 
 The recorder serves this API from inside the app process on **`http://127.0.0.1:8378`**, so a page
 open in a browser on the same phone can follow a recording as it happens, and start or stop one.
@@ -9,7 +9,7 @@ the recording, because `POST /start` has to be answerable before anything is bei
 foreground service keeps that process alive with the screen off for as long as a recording runs.
 
 > This file is the source of truth for the API. `./gradlew checkApiDocs` compares it against
-> `TrackerApi.kt` and fails on any disagreement; `releaseApk` and `check` both depend on it, so a
+> `RecorderApi.kt` and fails on any disagreement; `releaseApk` and `check` both depend on it, so a
 > release cannot be built with this file out of date. See [Keeping this in sync](#keeping-this-in-sync).
 
 ## Endpoints
@@ -48,7 +48,7 @@ Takes no parameters. Always answers `200` with the status object:
 | `version.code` | `versionCode` of the installed recorder. Compare against what your page needs |
 | `version.name` | human-readable version, e.g. `"0.4"` |
 | `port` | the port this recorder is listening on, always `8378` |
-| `portEcho` | the `port` from the last `freemap-recorder://` link, or `null` — see [Launching from the web](README.md#launching-from-the-web) |
+| `portEcho` | the `port` from the last `freemap-gps-recorder://` link, or `null` — see [Launching from the web](README.md#launching-from-the-web) |
 | `permissions.fine` | `ACCESS_FINE_LOCATION` granted |
 | `permissions.background` | `ACCESS_BACKGROUND_LOCATION` granted |
 | `permissions.notifications` | `POST_NOTIFICATIONS` granted |
@@ -166,7 +166,7 @@ Starts recording. Takes no body. Returns the [status object](#get-status).
 The `409` is nearly always `ForegroundServiceStartNotAllowedException`: Android 12+ refuses to let a
 backgrounded app start a foreground service unless it is exempt from battery optimisation, which is
 what `batteryExempt` reports. If a page needs to start a recording while the app is not in front, the
-`freemap-recorder://` link route in the [README](README.md#launching-from-the-web) is the reliable one
+`freemap-gps-recorder://` link route in the [README](README.md#launching-from-the-web) is the reliable one
 — it brings the app forward first.
 
 The response is not sent until the service has actually settled into the recording state (up to 3
@@ -200,7 +200,7 @@ is unaffected either way.
 
 Matching is exact, and an origin is scheme **and** host **and** port: `https://freemap.sk` does not
 cover `https://www.freemap.sk`, `http://www.freemap.sk` or `https://www.freemap.eu:8443`. A new
-hostname for the site needs a new entry in `ALLOWED_ORIGINS` in `TrackerApi.kt`.
+hostname for the site needs a new entry in `ALLOWED_ORIGINS` in `RecorderApi.kt`.
 
 Preflights answer `204` with `Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS`,
 `Access-Control-Allow-Headers: Content-Type, Last-Event-ID, Cache-Control`, a 24-hour
@@ -231,7 +231,7 @@ already running on your phone with the INTERNET permission has better ways to tr
 | `404` | `{"error":"no such endpoint"}` | unknown path |
 | `405` | `{"error":"method not allowed"}` | known path, wrong method |
 | `409` | the status object with an `error` | start refused by the platform, or clear while recording |
-| `500` | `{"error":"internal"}` | a bug. Logged with a stack trace under tag `TrackerApi` |
+| `500` | `{"error":"internal"}` | a bug. Logged with a stack trace under tag `RecorderApi` |
 
 `403` and `409` carry the whole status object, not just the error, so a page can say what is actually
 wrong without a second request.
@@ -258,7 +258,7 @@ curl -si -H 'Origin: https://www.freemap.sk' http://127.0.0.1:8378/status | grep
 
 ## Keeping this in sync
 
-`./gradlew checkApiDocs` reads `TrackerApi.kt` and this file and fails when they disagree on:
+`./gradlew checkApiDocs` reads `RecorderApi.kt` and this file and fails when they disagree on:
 
 - **which paths exist** — the route table against the endpoint headings here
 - **which methods are allowed** — the `Access-Control-Allow-Methods` header against the methods in

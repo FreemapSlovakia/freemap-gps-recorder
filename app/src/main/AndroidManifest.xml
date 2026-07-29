@@ -20,7 +20,7 @@
         android:required="false" />
 
     <application
-        android:name=".TrackerApp"
+        android:name=".RecorderApp"
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
@@ -37,12 +37,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Lets a page link straight into the recorder: freemap-recorder://start -->
+            <!-- Lets a page link straight into the recorder: freemap-gps-recorder://start -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="freemap-recorder" />
+                <data android:scheme="freemap-gps-recorder" />
             </intent-filter>
         </activity>
 
@@ -53,7 +53,7 @@
             android:parentActivityName=".MainActivity" />
 
         <service
-            android:name=".TrackingService"
+            android:name=".RecordingService"
             android:exported="false"
             android:foregroundServiceType="location" />
     </application>

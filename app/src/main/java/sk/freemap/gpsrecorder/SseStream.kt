@@ -1,4 +1,4 @@
-package sk.freemap.tracker
+package sk.freemap.gpsrecorder
 
 import java.io.InputStream
 import java.nio.charset.StandardCharsets

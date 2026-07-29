@@ -1,11 +1,11 @@
-package sk.freemap.tracker
+package sk.freemap.gpsrecorder
 
 import android.content.Context
 import android.os.Build
 
 /**
  * This build's version, read back from the installed package rather than from `BuildConfig`, so it
- * is what Android actually installed. Both halves come from `tracker.versionCode`/`versionName` in
+ * is what Android actually installed. Both halves come from `recorder.versionCode`/`versionName` in
  * `gradle.properties`, which is the only place either is written down.
  */
 object AppVersion {

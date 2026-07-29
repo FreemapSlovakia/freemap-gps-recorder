@@ -1,4 +1,4 @@
-package sk.freemap.tracker
+package sk.freemap.gpsrecorder
 
 import android.Manifest
 import android.app.Activity
@@ -28,7 +28,7 @@ import android.widget.Toast
  * The checklist is re-read on every resume rather than only after a prompt, because half of these
  * items can only be resolved by walking off into the system settings and coming back.
  *
- * Also the landing point for `freemap-recorder://` links, which let a page start a recording without
+ * Also the landing point for `freemap-gps-recorder://` links, which let a page start a recording without
  * the user ever looking at this screen.
  */
 class MainActivity : Activity() {
@@ -80,14 +80,14 @@ class MainActivity : Activity() {
             // Pressing the button is a decision to be here, so drop any pending link hand-back —
             // e.g. from a link whose setup the user abandoned earlier and only finished now.
             returnAfterStart = false
-            if (TrackerState.recording) TrackingService.stop(this) else startRecording()
+            if (RecorderState.recording) RecordingService.stop(this) else startRecording()
         }
 
         buildSetupRows()
 
         // Cold start with nothing recording: show what is already on disk.
-        if (!TrackerState.recording) {
-            Thread { TrackerState.pointCount = PointStore.get(this).count() }.start()
+        if (!RecorderState.recording) {
+            Thread { RecorderState.pointCount = PointStore.get(this).count() }.start()
         }
 
         openedByLink = savedInstanceState == null && intent?.data != null
@@ -108,7 +108,7 @@ class MainActivity : Activity() {
         handler.post(ticker)
         // A link that arrived before the app was able to record is fulfilled the moment it can be —
         // which is usually right here, on the way back from a permission prompt or settings screen.
-        if (returnAfterStart && !TrackerState.recording && canRecord) startRecording()
+        if (returnAfterStart && !RecorderState.recording && canRecord) startRecording()
         // Not on the way through: a link hand-back is about to send this screen to the back, and an
         // update prompt has no business arriving as it goes.
         if (!returnAfterStart && !updateOffered) checkForUpdates(manual = false)
@@ -129,7 +129,7 @@ class MainActivity : Activity() {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
         R.id.menu_update -> {
-            if (TrackerState.recording) toast(R.string.update_recording) else checkForUpdates(manual = true)
+            if (RecorderState.recording) toast(R.string.update_recording) else checkForUpdates(manual = true)
             true
         }
 
@@ -194,9 +194,9 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
-        val recording = TrackerState.recording
+        val recording = RecorderState.recording
         stateView.setText(if (recording) R.string.state_recording else R.string.state_idle)
-        countView.text = getString(R.string.points_fmt, TrackerState.pointCount)
+        countView.text = getString(R.string.points_fmt, RecorderState.pointCount)
         toggle.setText(if (recording) R.string.stop else R.string.start)
         // Stopping must always be possible, even if a permission was revoked mid-recording.
         toggle.isEnabled = recording || canRecord
@@ -444,7 +444,7 @@ class MainActivity : Activity() {
     // --- links -------------------------------------------------------------------------------
 
     /**
-     * `freemap-recorder://start` starts recording and hands focus straight back to the browser;
+     * `freemap-gps-recorder://start` starts recording and hands focus straight back to the browser;
      * any other authority just opens the app. An optional `?port=` is echoed by `GET /status`.
      *
      * A link makes the app foreground, so the foreground-service start is always permitted here —
@@ -455,15 +455,15 @@ class MainActivity : Activity() {
         if (uri.scheme != LINK_SCHEME) return
 
         uri.getQueryParameter("port")?.toIntOrNull()?.let {
-            TrackerState.portEcho = it
-            if (it != TrackerApi.PORT) Log.w(TAG, "link asked for port $it, serving ${TrackerApi.PORT}")
+            RecorderState.portEcho = it
+            if (it != RecorderApi.PORT) Log.w(TAG, "link asked for port $it, serving ${RecorderApi.PORT}")
         }
 
         if (uri.host != LINK_START) return
         returnAfterStart = true
         when {
             // Already recording: nothing to do but get out of the way.
-            TrackerState.recording -> dismiss()
+            RecorderState.recording -> dismiss()
             Setup.canRecord(this) -> startRecording()
             // Setup is unfinished, so the link cannot be honoured yet. Open the first thing standing
             // in the way rather than leaving the user to work out which row to press.
@@ -472,7 +472,7 @@ class MainActivity : Activity() {
     }
 
     private fun startRecording() {
-        TrackingService.start(this)
+        RecordingService.start(this)
         if (returnAfterStart) dismiss()
     }
 
@@ -498,7 +498,7 @@ class MainActivity : Activity() {
         private const val REFRESH_MS = 500L
 
         /** Declared in the manifest's BROWSABLE intent filter. */
-        private const val LINK_SCHEME = "freemap-recorder"
+        private const val LINK_SCHEME = "freemap-gps-recorder"
         private const val LINK_START = "start"
     }
 }

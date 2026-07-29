@@ -6,12 +6,12 @@ plugins {
 
 // Single source of truth for the version: the manifest, BuildConfig, `GET /status` and the
 // publishable APK filename are all derived from these two, so they cannot drift apart.
-val trackerVersionCode = providers.gradleProperty("tracker.versionCode").get().toInt()
-val trackerVersionName = providers.gradleProperty("tracker.versionName").get()
-val updateManifestUrl = providers.gradleProperty("tracker.updateManifestUrl").get()
-val publishedApkUrl = providers.gradleProperty("tracker.apkUrl").get()
-val minSupportedVersionCode = providers.gradleProperty("tracker.minSupportedVersionCode").get().toInt()
-val releaseNotes = providers.gradleProperty("tracker.releaseNotes").get()
+val recorderVersionCode = providers.gradleProperty("recorder.versionCode").get().toInt()
+val recorderVersionName = providers.gradleProperty("recorder.versionName").get()
+val updateManifestUrl = providers.gradleProperty("recorder.updateManifestUrl").get()
+val publishedApkUrl = providers.gradleProperty("recorder.apkUrl").get()
+val minSupportedVersionCode = providers.gradleProperty("recorder.minSupportedVersionCode").get().toInt()
+val releaseNotes = providers.gradleProperty("recorder.releaseNotes").get()
 
 /**
  * Release signing credentials, which are never in the repository. Environment variables win, so a
@@ -28,23 +28,23 @@ fun credential(environment: String, property: String): String? =
         ?: keystoreProperties.getProperty(property)
         ?: providers.gradleProperty(property).orNull
 
-val storeFilePath = credential("FREEMAP_TRACKER_STORE_FILE", "tracker.storeFile")
-val storePasswordValue = credential("FREEMAP_TRACKER_STORE_PASSWORD", "tracker.storePassword")
-val keyAliasName = credential("FREEMAP_TRACKER_KEY_ALIAS", "tracker.keyAlias")
-val keyPasswordValue = credential("FREEMAP_TRACKER_KEY_PASSWORD", "tracker.keyPassword")
+val storeFilePath = credential("FREEMAP_GPS_RECORDER_STORE_FILE", "recorder.storeFile")
+val storePasswordValue = credential("FREEMAP_GPS_RECORDER_STORE_PASSWORD", "recorder.storePassword")
+val keyAliasName = credential("FREEMAP_GPS_RECORDER_KEY_ALIAS", "recorder.keyAlias")
+val keyPasswordValue = credential("FREEMAP_GPS_RECORDER_KEY_PASSWORD", "recorder.keyPassword")
 val canSign = storeFilePath != null && storePasswordValue != null &&
     keyAliasName != null && keyPasswordValue != null
 
 android {
-    namespace = "sk.freemap.tracker"
+    namespace = "sk.freemap.gpsrecorder"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "sk.freemap.tracker"
+        applicationId = "sk.freemap.gpsrecorder"
         minSdk = 26
         targetSdk = 36
-        versionCode = trackerVersionCode
-        versionName = trackerVersionName
+        versionCode = recorderVersionCode
+        versionName = recorderVersionName
 
         buildConfigField("String", "UPDATE_MANIFEST_URL", "\"$updateManifestUrl\"")
     }
@@ -71,7 +71,7 @@ android {
             }
         } else {
             logger.lifecycle(
-                "freemap-tracker: no release signing credentials found — " +
+                "freemap-gps-recorder: no release signing credentials found — " +
                     "assembleRelease will produce an unsigned APK. See README, Signing."
             )
         }
@@ -98,7 +98,7 @@ android {
     }
 }
 
-val apiSource = file("src/main/java/sk/freemap/tracker/TrackerApi.kt")
+val apiSource = file("src/main/java/sk/freemap/gpsrecorder/RecorderApi.kt")
 val apiDoc = rootProject.file("API.md")
 
 /**
@@ -110,7 +110,7 @@ val apiDoc = rootProject.file("API.md")
  * that what is written down about it is true. The prose still has to be kept honest by hand.
  */
 tasks.register("checkApiDocs") {
-    description = "Fails when API.md and TrackerApi.kt disagree about the HTTP surface."
+    description = "Fails when API.md and RecorderApi.kt disagree about the HTTP surface."
     group = "verification"
     inputs.file(apiSource)
     inputs.file(apiDoc)
@@ -136,7 +136,7 @@ tasks.register("checkApiDocs") {
         // Methods, from the preflight header — the list a browser is told it may use.
         val allowed = Regex("""Access-Control-Allow-Methods", "([^"]+)"""").find(source)
         if (allowed == null) {
-            problems += "no Access-Control-Allow-Methods header found in TrackerApi.kt"
+            problems += "no Access-Control-Allow-Methods header found in RecorderApi.kt"
         } else {
             val corsMethods = allowed.groupValues[1].split(",").map { it.trim() }.toSortedSet()
             // OPTIONS is answered for every path rather than documented per endpoint.
@@ -160,7 +160,7 @@ tasks.register("checkApiDocs") {
 
         if (problems.isNotEmpty()) {
             throw GradleException(
-                problems.joinToString("\n  - ", "API.md is out of sync with TrackerApi.kt:\n  - ")
+                problems.joinToString("\n  - ", "API.md is out of sync with RecorderApi.kt:\n  - ")
             )
         }
         logger.lifecycle(
@@ -185,8 +185,8 @@ val updateManifestFile = layout.buildDirectory.file("distributions/latest.json")
 tasks.register("updateManifest") {
     description = "Writes the latest.json to publish alongside the release APK."
     group = "build"
-    inputs.property("versionCode", trackerVersionCode)
-    inputs.property("versionName", trackerVersionName)
+    inputs.property("versionCode", recorderVersionCode)
+    inputs.property("versionName", recorderVersionName)
     inputs.property("apkUrl", publishedApkUrl)
     inputs.property("minSupported", minSupportedVersionCode)
     inputs.property("notes", releaseNotes)
@@ -203,8 +203,8 @@ tasks.register("updateManifest") {
         file.writeText(
             """
             {
-              "versionCode": $trackerVersionCode,
-              "versionName": "${escape(trackerVersionName)}",
+              "versionCode": $recorderVersionCode,
+              "versionName": "${escape(recorderVersionName)}",
               "apkUrl": "${escape(publishedApkUrl)}",
               "notes": "${escape(releaseNotes)}",
               "minSupportedVersionCode": $minSupportedVersionCode
@@ -225,14 +225,14 @@ tasks.register("updateManifest") {
  * that produces a publishable artefact, so it is the last honest moment to notice drift.
  */
 tasks.register<Copy>("releaseApk") {
-    description = "Builds the release APK and copies it out as freemap-recorder-<version>.apk."
+    description = "Builds the release APK and copies it out as freemap-gps-recorder-<version>.apk."
     group = "build"
     dependsOn("assembleRelease", "checkApiDocs", "updateManifest")
     from(layout.buildDirectory.dir("outputs/apk/release")) {
         include("*.apk")
     }
     into(layout.buildDirectory.dir("distributions"))
-    rename { "freemap-recorder-$trackerVersionName.apk" }
+    rename { "freemap-gps-recorder-$recorderVersionName.apk" }
 }
 
 dependencies {

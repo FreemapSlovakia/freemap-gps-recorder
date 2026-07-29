@@ -1,4 +1,4 @@
-package sk.freemap.tracker
+package sk.freemap.gpsrecorder
 
 import java.util.concurrent.CopyOnWriteArrayList
 

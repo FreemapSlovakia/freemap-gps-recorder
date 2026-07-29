@@ -37,7 +37,7 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
             Log.e(TAG, "request failed: ${session.method} ${session.uri}", e)
             json(Response.Status.INTERNAL_ERROR, """{"error":"internal"}""")
         }
-        return cors(response, preflight = session.method == Method.OPTIONS)
+        return cors(response, session.headers[HEADER_ORIGIN], session.method == Method.OPTIONS)
     }
 
     private fun route(session: IHTTPSession): Response {
@@ -165,9 +165,20 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
     private fun notAllowed(): Response =
         json(Response.Status.METHOD_NOT_ALLOWED, """{"error":"method not allowed"}""")
 
-    private fun cors(response: Response, preflight: Boolean): Response {
-        response.addHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN)
+    /**
+     * Echoes the caller's own origin when it is one we allow. `Access-Control-Allow-Origin` takes a
+     * single origin, never a list, so an allowlist has to be matched and reflected rather than
+     * simply printed — and `Vary: Origin` goes with it, unconditionally, because the answer now
+     * depends on the request.
+     *
+     * An unknown or absent origin gets no header at all: browsers refuse the response, while
+     * anything without an origin (curl, the address bar) is unaffected either way.
+     */
+    private fun cors(response: Response, origin: String?, preflight: Boolean): Response {
         response.addHeader("Vary", "Origin")
+        if (origin != null && originAllowed(origin)) {
+            response.addHeader("Access-Control-Allow-Origin", origin)
+        }
         if (preflight) {
             response.addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             response.addHeader("Access-Control-Allow-Headers", "Content-Type, Last-Event-ID, Cache-Control")
@@ -200,8 +211,38 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
     companion object {
         private const val TAG = "TrackerApi"
 
-        /** The single origin allowed to talk to the recorder. */
-        const val ALLOWED_ORIGIN = "https://freemap.sk"
+        /**
+         * The origins allowed to talk to the recorder. Matched exactly, and an origin is scheme +
+         * host + port, so `https://freemap.sk` does not cover `https://www.freemap.sk` — every host
+         * the site is served from has to be listed here in full.
+         */
+        val ALLOWED_ORIGINS = setOf(
+            "https://freemap.sk",
+            "https://www.freemap.sk",
+            "https://www.freemap.eu",
+        )
+
+        /**
+         * The development host, additionally allowed on any port and over plain http, because a dev
+         * server picks whatever port is free and pinning one here would only mean editing this list.
+         * It is a freemap.sk subdomain, so pointing it anywhere still means controlling the site's
+         * own DNS.
+         */
+        private const val DEV_ORIGIN_HOST = "local.freemap.sk"
+
+        fun originAllowed(origin: String): Boolean {
+            if (origin in ALLOWED_ORIGINS) return true
+            val authority = when {
+                origin.startsWith("https://") -> origin.substring(8)
+                origin.startsWith("http://") -> origin.substring(7)
+                else -> return false
+            }
+            if (authority == DEV_ORIGIN_HOST) return true
+            // removePrefix leaves the whole string when it does not match, so a lookalike host like
+            // `evil-local.freemap.sk` or `local.freemap.sk.example.com` gets no further than here.
+            val port = authority.removePrefix("$DEV_ORIGIN_HOST:")
+            return port != authority && port.isNotEmpty() && port.all { it.isDigit() }
+        }
 
         const val PORT = 8378
 
@@ -209,6 +250,7 @@ class TrackerApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) {
         private const val HOST = "127.0.0.1"
 
         private const val HEADER_LAST_EVENT_ID = "last-event-id"
+        private const val HEADER_ORIGIN = "origin"
         private const val STATE_TIMEOUT_MS = 3_000L
         private const val STATE_POLL_MS = 25L
 

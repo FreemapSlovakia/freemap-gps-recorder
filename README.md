@@ -120,7 +120,7 @@ The guidance says so rather than repeating the folklore.
 
 ## Local HTTP API
 
-The app serves a small HTTP API on **`127.0.0.1:8378`**, so a page on `https://freemap.sk` can follow
+The app serves a small HTTP API on **`127.0.0.1:8378`**, so a page on freemap.sk can follow
 the recording as it happens. It is bound to loopback only — never `0.0.0.0` — so it is not reachable
 from the LAN, and it lives in the app process, which the foreground service keeps alive while
 recording. The server comes up with the process rather than with the recording, because `POST /start`
@@ -148,7 +148,7 @@ over a long track those digits add up. Absent fields are `null`, never `0`.
 watching `POST /start` fail for reasons it cannot name:
 
 ```json
-{"recording":false,"lastSeq":24,"count":24,"version":{"code":2,"name":"0.2"},
+{"recording":false,"lastSeq":24,"count":24,"version":{"code":3,"name":"0.3"},
  "port":8378,"portEcho":null,
  "permissions":{"fine":true,"background":true,"notifications":false},
  "batteryExempt":true,
@@ -170,9 +170,24 @@ replay is queued rather than lost, and the `seq` filter drops the overlap. A cli
 reading gets its connection closed once the buffer fills, rather than a silent hole in its tail —
 `EventSource` then reconnects and the replay path fills the gap.
 
-CORS is locked to a single origin, the `ALLOWED_ORIGIN` constant in `TrackerApi.kt`. Preflights also
-answer `Access-Control-Allow-Private-Network: true`, which older Chrome requires under the Private
-Network Access model and newer Chrome ignores under Local Network Access.
+CORS is locked to the `ALLOWED_ORIGINS` allowlist in `TrackerApi.kt`:
+
+| origin | |
+| --- | --- |
+| `https://freemap.sk` | |
+| `https://www.freemap.sk` | |
+| `https://www.freemap.eu` | |
+| `local.freemap.sk` | any port, and http as well as https — a dev server picks its own port |
+
+`Access-Control-Allow-Origin` takes one origin and never a list, so the caller's own `Origin` is
+matched against the list and echoed back, with `Vary: Origin` sent on every response because the
+answer now depends on the request. An origin that is not on the list gets no header at all, and the
+browser refuses the response; a request with no `Origin` — curl, the address bar — is unaffected.
+Matching is exact, and an origin is scheme *and* host *and* port, so a new hostname for the site
+means a new entry here even if it is the same site.
+
+Preflights also answer `Access-Control-Allow-Private-Network: true`, which older Chrome requires
+under the Private Network Access model and newer Chrome ignores under Local Network Access.
 
 ```sh
 adb forward tcp:8378 tcp:8378          # then reach it from the host
@@ -390,6 +405,15 @@ The update check was exercised against a manifest served over `adb reverse`:
 
 An update installing over the top keeps the recording: 104 points were still there, and still served,
 after reinstalling with `install -r`.
+
+The origin allowlist was checked against the minified 0.3 build on the emulator, header by header.
+`https://www.freemap.sk`, `https://www.freemap.eu`, `https://freemap.sk`, `https://local.freemap.sk`,
+`http://local.freemap.sk:5173` and `https://local.freemap.sk:8080` each get their own origin echoed
+back on `/status`, `/track` and `/stream` alike, and on the `OPTIONS` preflight. `https://evil.com`,
+`https://freemap.sk.evil.com`, `https://evil-local.freemap.sk` and `http://local.freemap.sk.evil.com`
+get no `Access-Control-Allow-Origin` at all — nor does `http://www.freemap.sk` or
+`https://www.freemap.eu:8443`, which is the point of matching scheme and port and not just the host.
+`Vary: Origin` is on every response including the ones with no origin to echo.
 
 Two things were not driven end to end. The manifest URL is not published yet, so the only server this
 has spoken to is a local one. And the install-source prompt itself is Android's, on a first browser

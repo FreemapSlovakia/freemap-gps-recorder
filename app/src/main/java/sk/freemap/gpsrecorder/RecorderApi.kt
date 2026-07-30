@@ -91,7 +91,9 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
         val response = newChunkedResponse(
             Response.Status.OK,
             "text/event-stream",
-            SseStream(store, since),
+            // The status goes out ahead of the points, so a client that never calls `/status` still
+            // knows what it has joined and how to read the rows.
+            SseStream(store, since, statusJson()),
         )
         response.addHeader("Cache-Control", "no-cache, no-transform")
         response.addHeader("X-Accel-Buffering", "no")
@@ -110,6 +112,9 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
         store.clear()
         RecorderState.pointCount = 0
         RecorderState.lastSeq = 0
+        // The generation bump is the only signal that a client's points are gone, and it used to be
+        // discoverable by polling alone — a live tail saw `seq` simply carry on. Now it arrives.
+        publishStatus()
         return json(Response.Status.OK, statusJson())
     }
 
@@ -220,6 +225,12 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
         sb.append(",\"lastSeq\":").append(store.maxSeq())
         sb.append(",\"count\":").append(store.count())
         sb.append(",\"generation\":").append(store.generation())
+        // The same list `/track` returns with every page. It is here because `/stream` sends bare
+        // rows, and a client that attaches to the stream without reading a page first — a reconnecting
+        // EventSource, or one whose cursor is already current — would otherwise have to fall back on a
+        // hardcoded column list. Appending to the list can never break such a client; naming it here
+        // means they need not guess in the first place.
+        sb.append(",\"fields\":").append(Point.FIELDS_JSON)
         sb.append(",\"version\":{\"code\":").append(AppVersion.code(app))
         sb.append(",\"name\":")
         quoted(sb, AppVersion.name(app))
@@ -373,6 +384,20 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
 
         @Volatile
         private var instance: RecorderApi? = null
+
+        /**
+         * Pushes the current status to every open `/stream`, so a connected client does not have to
+         * poll `/status` to notice a stop, a pause, a resume or a cleared track.
+         *
+         * Safe to call at anything that might have changed it: [RecorderBus.publishStatus] drops a
+         * snapshot identical to the last one, so a status event always means the status is genuinely
+         * different. Does nothing before the server is up, which is only the case before
+         * [RecorderApp.onCreate] has run.
+         */
+        fun publishStatus() {
+            val api = instance ?: return
+            RecorderBus.publishStatus(api.statusJson())
+        }
 
         @Synchronized
         fun ensureRunning(context: Context) {

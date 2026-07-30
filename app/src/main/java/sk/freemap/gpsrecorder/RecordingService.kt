@@ -75,7 +75,7 @@ class RecordingService : Service() {
                 val point = store.append(loc, segment, gnss?.satellites(), gnss?.geoidSeparation())
                 RecorderState.lastSeq = point.seq
                 RecorderState.pointCount++
-                PointBus.publish(point)
+                RecorderBus.publishFix(point)
                 appended = true
             }
             if (appended) maybeRefreshNotification()
@@ -180,6 +180,7 @@ class RecordingService : Service() {
         segment = store.nextSegment()
         subscribe()
         Log.i(TAG, "tracking started in segment $segment, ${RecorderState.pointCount} points stored")
+        RecorderApi.publishStatus()
     }
 
     /**
@@ -195,6 +196,7 @@ class RecordingService : Service() {
         unsubscribe()
         refreshNotification()
         Log.i(TAG, "paused at ${RecorderState.pointCount} points")
+        RecorderApi.publishStatus()
     }
 
     /** Consumes fixes again, in a new segment: the break belongs in the track, not in a client's guess. */
@@ -206,6 +208,7 @@ class RecordingService : Service() {
         subscribe()
         refreshNotification()
         Log.i(TAG, "resumed into segment $segment")
+        RecorderApi.publishStatus()
     }
 
     private fun stopTracking() {
@@ -227,6 +230,9 @@ class RecordingService : Service() {
 
         stopForeground(STOP_FOREGROUND_REMOVE)
         Log.i(TAG, "tracking stopped at ${RecorderState.pointCount} points")
+        // A tail that stays open across a stop is exactly the client this is for: it would otherwise
+        // just see the fixes dry up, which looks identical to standing still.
+        RecorderApi.publishStatus()
     }
 
     /**

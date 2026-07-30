@@ -185,6 +185,19 @@ makes clearing safe for clients: a stale `?since=` can come back empty, but it c
 with *different* points wearing ids the client already has. `generation` in `/status` is the signal
 that a clear happened at all.
 
+The stream carries a named `status` event as well as points, and `/status` names the point columns in
+`fields`. Both exist for one reason: a client should not have to *infer* something the recorder knows.
+Without the status event a connected client polls to notice a stop or a pause, which leaves its panel
+stale by the poll interval — read as a bug rather than as an interval — and a frozen background tab runs
+no timer at all. Without `fields`, a client that attaches to the stream without reading a `/track` page
+first must fall back on a hardcoded column list, which stays correct only while the names it knows remain
+a prefix of the real ones. Append-only keeps that true, but safe-by-convention is not the same as told.
+
+The status event carries no `id:`, deliberately: `Last-Event-ID` is a point cursor, and a status frame
+that set it would have a reconnecting client resume from a value that is not a `seq`, losing or replaying
+points. One goes out on connect, and after that only when the object differs from the last one sent — so
+receiving one means something genuinely changed, and a client can act on it rather than diffing.
+
 `seg` exists because the recorder is the only party that actually knows where the breaks are. A client
 can guess from a gap in `ts`, and it will be wrong at both ends — a tunnel looks like a break and a
 twenty-second pause looks like none — and every client would have to guess the same way. The ordinal is

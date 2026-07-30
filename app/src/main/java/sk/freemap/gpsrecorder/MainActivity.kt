@@ -318,6 +318,12 @@ class MainActivity : Activity() {
             row.action.isEnabled = !blocked
         }
 
+        // This is the one moment the app learns that a permission, the battery exemption or the OEM
+        // acknowledgement changed — they are granted in Settings, with nothing to call back — so it is
+        // also the cheapest place to tell a connected `/stream` client. Firing at every resume costs
+        // nothing: an unchanged status is not published.
+        RecorderApi.publishStatus()
+
         val checklist = if (complete) View.GONE else View.VISIBLE
         setupHeading.visibility = checklist
         setupList.visibility = checklist

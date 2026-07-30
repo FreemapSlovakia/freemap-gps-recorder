@@ -33,7 +33,8 @@ Takes no parameters. Always answers `200` with the status object:
 
 ```json
 {"recording":false,"paused":false,"lastSeq":1919,"count":1919,"generation":0,
- "version":{"code":6,"name":"0.6"},
+ "fields":["seq","ts","lat","lon","alt","acc","spd","brg","altMsl","altAcc","spdAcc","brgAcc","sat","src","seg"],
+ "version":{"code":7,"name":"0.7"},
  "port":8378,"portEcho":null,
  "permissions":{"fine":true,"background":true,"notifications":true},
  "batteryExempt":true,
@@ -49,8 +50,9 @@ Takes no parameters. Always answers `200` with the status object:
 | `lastSeq` | highest `seq` currently stored, or `0` when the track is empty. Poll `/track?since=` with this |
 | `count` | how many points are stored |
 | `generation` | how many times the track has been cleared — see [`DELETE /track`](#delete-track) |
+| `fields` | the point column names, in order — the same list [`GET /track`](#get-track) returns |
 | `version.code` | `versionCode` of the installed recorder. Compare against what your page needs |
-| `version.name` | human-readable version, e.g. `"0.6"` |
+| `version.name` | human-readable version, e.g. `"0.7"` |
 | `port` | the port this recorder is listening on, always `8378` |
 | `portEcho` | the `port` from the last `freemap-gps-recorder://` link, or `null` — see [Launching from the web](README.md#launching-from-the-web) |
 | `permissions.fine` | `ACCESS_FINE_LOCATION` granted |
@@ -71,6 +73,12 @@ Takes no parameters. Always answers `200` with the status object:
 `canRecord` is what to check before offering a start button. `setupComplete` being false is not an
 error: recording works without those items, it is just liable to be killed after a while.
 
+`fields` is here for the client that attaches to [`GET /stream`](#get-stream) without reading a
+`/track` page first — a reconnecting `EventSource`, or one whose cursor is already current. The stream
+sends bare rows, so such a client would otherwise fall back on a hardcoded column list. Appending to
+the list can never break it, since the names it knows stay a prefix of the real one; naming them here
+means it need not guess at all. It costs no extra request, because a client reads `/status` anyway.
+
 `config` is the **effective** recording config — what the running recording actually uses, or what the
 next one will use, after clamping to what the platform allows. Send values with
 [`POST /start`](#post-start) and read them back here; comparing the two is how you find out that a
@@ -78,7 +86,9 @@ request was clamped. The presence of `config` at all is the feature detection: a
 none ignored the body you sent it, and there is no separate capability flag or version gate to check.
 
 The same status object is the body of every `/start`, `/stop`, `/pause`, `/resume` and `DELETE /track`
-response, so one request tells you both what happened and where things now stand.
+response, so one request tells you both what happened and where things now stand. It is also what the
+`status` event on [`GET /stream`](#get-stream) carries, which is how a connected client keeps up without
+polling this endpoint at all.
 
 ### GET /track
 
@@ -167,7 +177,9 @@ That includes a **paused** recording, where nothing is being appended right now:
 live, so a resume would go on adding to a track the caller was told had been thrown away. Stopping is
 what ends a session, and it is what has to happen before a clear.
 
-On success `count` becomes `0`, `lastSeq` becomes `0`, and **`generation` increases by one**.
+On success `count` becomes `0`, `lastSeq` becomes `0`, and **`generation` increases by one**. A
+[`status` event](#the-status-event) carrying the new `generation` goes out to every open `/stream`, so a
+client holding a copy of the track hears about it rather than discovering it on its next poll.
 
 `seq` does *not* restart. The next fix recorded carries on above the highest id ever handed out, so
 a client polling `/track?since=1919` after a clear is never served a different set of points under
@@ -180,17 +192,47 @@ The database file is vacuumed, so the disk space actually comes back.
 ### GET /stream
 
 A [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) tail: one
-event per fix, as it is recorded. Content type `text/event-stream`, sent unbuffered and uncompressed.
+event per fix as it is recorded, plus a `status` event whenever the recorder's state changes. Content
+type `text/event-stream`, sent unbuffered and uncompressed.
 
 ```
 retry: 3000
+
+event: status
+data: {"recording":true,"paused":false,"lastSeq":550,…,"fields":["seq","ts",…,"seg"],…}
 
 id: 551
 data: [551,1785174196371,48.7062102,21.2367301,279.4,1.9,0.4,183.0,237.3,2.4,0.3,12.0,9,"fused",3]
 ```
 
-The `data:` payload is one point in exactly the positional encoding `/track` uses — same order, same
-rounding, same nulls. `id:` is the point's `seq`, which is what comes back as `Last-Event-ID`.
+An unnamed event is a point: the `data:` payload is one point in exactly the positional encoding
+`/track` uses — same order, same rounding, same nulls. `id:` is the point's `seq`, which is what comes
+back as `Last-Event-ID`.
+
+#### The status event
+
+A **named** `status` event carries the whole [status object](#get-status), the same one `/status`
+returns. `EventSource` delivers named events only to a matching `addEventListener`, so a client that
+handles just `message` ignores these and behaves exactly as it did before they existed.
+
+One arrives **on connect**, before any point, so a client that never calls `/status` still knows what it
+has joined — and, since the object names the point columns in `fields`, how to decode the rows that
+follow. After that, one arrives whenever the status **changes**: on start, stop, pause, resume, and on
+[`DELETE /track`](#delete-track). A permission being granted or revoked, the battery exemption changing
+or the OEM item being acknowledged is noticed the next time the app's own screen is resumed, which is
+the only moment the platform gives it to notice — those are set in Settings, with nothing to call back.
+
+An identical snapshot is never sent twice, so receiving one means something is genuinely different.
+
+That is enough to drop a `/status` poll entirely. It also closes a real hole rather than only saving a
+request: a client that stays connected across a stop, a clear and a fresh start used to see `seq` simply
+carry on, with the `generation` bump discoverable only by polling. Now it arrives at the moment it
+happens.
+
+Status events deliberately carry **no `id:`**. `Last-Event-ID` is a point cursor, and a status frame
+that set it would have a reconnecting client resume from something that is not a `seq` — losing points,
+or replaying them. It follows that a reconnect never "replays" missed status events; it gets one fresh
+snapshot on connect, which is strictly better.
 
 | how to resume | |
 | --- | --- |
@@ -209,9 +251,10 @@ A client that stops reading has its connection closed once the server-side queue
 roughly four minutes at 1 Hz) rather than being given a silent hole in its tail. `EventSource` then
 reconnects on its own and the `Last-Event-ID` replay fills the gap.
 
-Nothing on this stream signals a cleared track. `DELETE /track` is refused while recording, so a live
-tail cannot have the track pulled out from under it — but a client that stays connected across a
-stop, a clear and a fresh start will see `seq` simply continue. Watch `generation` on `/status`.
+A cleared track is signalled by the `status` event above, whose `generation` is what tells a client its
+points are gone. `DELETE /track` is refused while recording, so a live tail cannot have the track pulled
+out from under it in the first place; the event covers the case where a client stays connected across a
+stop, a clear and a fresh start, and would otherwise see `seq` simply continue.
 
 ### POST /start
 

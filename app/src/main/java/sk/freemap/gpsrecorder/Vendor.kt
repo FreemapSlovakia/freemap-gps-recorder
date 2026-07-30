@@ -22,8 +22,10 @@ enum class Vendor(
     private val screens: List<String>,
 ) {
 
-    // No component: MIUI puts both switches that matter — Battery saver and Autostart — on the
-    // app's own info page, which the documented app-details intent already opens.
+    // No component: what MIUI still hides on the app's own info page is reachable through the
+    // documented app-details intent. Its per-app Battery saver is not a separate switch to chase —
+    // on HyperOS it and the platform's exemption are one setting, so the battery row already covers
+    // it; what is left here is the Recents lock, which no intent can open and no API can read.
     XIAOMI("xiaomi", R.string.vendor_xiaomi, R.string.vendor_xiaomi_help, emptyList()),
 
     HUAWEI(

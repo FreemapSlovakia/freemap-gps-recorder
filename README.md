@@ -157,6 +157,12 @@ turn and every launch is wrapped; anything that misses falls back to the app-det
 where the per-app switches live on most of these ROMs anyway. The row is the user's word that it is
 done, kept in `SharedPreferences`, and it is only shown at all on those manufacturers.
 
+What the row says is worth keeping narrow: it should ask only for what the checklist above cannot
+already verify. On Xiaomi it no longer asks for the per-app *Battery saver* mode, because on HyperOS
+that mode and the platform's exemption are the same setting under two names — measured, not assumed,
+in the Status section below — so the battery row's ✓ is the honest answer for both. What is left is
+the Recents lock, which loses tracks, which no intent opens and no API reports.
+
 Note what this item is *not*: autostart. Autostart governs whether a vendor ROM may launch an app
 that is not running — on boot, from a broadcast, from another app. A recording the user started is
 already running, so autostart is not what keeps it alive; the per-app battery mode is. It matters
@@ -456,6 +462,16 @@ and no `ForegroundServiceDidNotStartInTimeException` for stopping before going f
 On the phone, vendor detection reports `"oem":{"vendor":"xiaomi","needed":true}`, and setting the
 acknowledgement flips `acknowledged` and `setupComplete` together. The vendor dialog's own buttons
 are the one thing not exercised by script, for the `INJECT_EVENTS` reason above.
+
+MIUI's per-app battery mode is readable — `dumpsys activity service com.miui.powerkeeper` lists a
+`pkg|time|mode` row per app, `miuiAuto` by default and `noRestrict` for an unrestricted one — which
+settles whether it is a switch of its own. On HyperOS (Android 16, 2026-07) it is not: setting the
+app to *Battery saver* on its info page moved powerkeeper to `miuiAuto` **and** dropped the package
+from `dumpsys deviceidle whitelist` in the same moment, so `isIgnoringBatteryOptimizations` reports
+what the MIUI UI shows. The reverse is only true through the UI — removing the package from the
+whitelist over adb left powerkeeper at `noRestrict`, which is adb going around MIUI rather than two
+settings disagreeing. Hence the Xiaomi guidance no longer asks for a battery mode the checklist
+already verifies.
 
 The signed, minified release APK was verified on the same emulator. A clean install (uninstall
 first) reports `versionCode=2`, `signatures=PackageSignatures{version:3}`, and `/status` answers

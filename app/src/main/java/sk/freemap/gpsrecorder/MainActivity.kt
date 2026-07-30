@@ -36,6 +36,7 @@ class MainActivity : Activity() {
     private lateinit var stateView: TextView
     private lateinit var countView: TextView
     private lateinit var toggle: Button
+    private lateinit var pause: Button
     private lateinit var warning: TextView
     private lateinit var setupHeading: TextView
     private lateinit var setupList: LinearLayout
@@ -72,6 +73,7 @@ class MainActivity : Activity() {
         stateView = findViewById(R.id.state)
         countView = findViewById(R.id.count)
         toggle = findViewById(R.id.toggle)
+        pause = findViewById(R.id.pause)
         warning = findViewById(R.id.warning)
         setupHeading = findViewById(R.id.setup_heading)
         setupList = findViewById(R.id.setup)
@@ -81,6 +83,10 @@ class MainActivity : Activity() {
             // e.g. from a link whose setup the user abandoned earlier and only finished now.
             returnAfterStart = false
             if (RecorderState.recording) RecordingService.stop(this) else startRecording()
+        }
+
+        pause.setOnClickListener {
+            if (RecorderState.paused) RecordingService.resume(this) else RecordingService.pause(this)
         }
 
         buildSetupRows()
@@ -195,11 +201,21 @@ class MainActivity : Activity() {
 
     private fun render() {
         val recording = RecorderState.recording
-        stateView.setText(if (recording) R.string.state_recording else R.string.state_idle)
+        val paused = RecorderState.paused
+        stateView.setText(
+            when {
+                !recording -> R.string.state_idle
+                paused -> R.string.state_paused
+                else -> R.string.state_recording
+            }
+        )
         countView.text = getString(R.string.points_fmt, RecorderState.pointCount)
         toggle.setText(if (recording) R.string.stop else R.string.start)
         // Stopping must always be possible, even if a permission was revoked mid-recording.
         toggle.isEnabled = recording || canRecord
+        pause.setText(if (paused) R.string.resume else R.string.pause)
+        // Pausing means nothing without a session to keep, so the button is only there during one.
+        pause.visibility = if (recording) View.VISIBLE else View.INVISIBLE
     }
 
     // --- setup checklist ---------------------------------------------------------------------

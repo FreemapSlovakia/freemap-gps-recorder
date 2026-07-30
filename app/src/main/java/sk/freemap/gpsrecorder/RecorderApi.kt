@@ -10,6 +10,7 @@ import fi.iki.elonen.NanoHTTPD.Response
 import fi.iki.elonen.NanoHTTPD.SOCKET_READ_TIMEOUT
 import fi.iki.elonen.NanoHTTPD.newChunkedResponse
 import fi.iki.elonen.NanoHTTPD.newFixedLengthResponse
+import org.json.JSONException
 import java.io.IOException
 
 /**
@@ -45,6 +46,10 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
         if (method == Method.OPTIONS) {
             return newFixedLengthResponse(Response.Status.NO_CONTENT, null, null)
         }
+        // An unread request body stays in the connection's buffer, where it would be taken for the
+        // beginning of the next request on a keep-alive connection, so every POST body is consumed
+        // whether or not the endpoint has any use for one. Only the start endpoint reads it.
+        val body = if (method == Method.POST) body(session) else null
         return when (session.uri) {
             "/track" -> when (method) {
                 Method.GET -> track(session)
@@ -53,8 +58,10 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
             }
             "/stream" -> if (method == Method.GET) stream(session) else notAllowed()
             "/status" -> if (method == Method.GET) json(Response.Status.OK, statusJson()) else notAllowed()
-            "/start" -> if (method == Method.POST) startRecording() else notAllowed()
+            "/start" -> if (method == Method.POST) startRecording(body) else notAllowed()
             "/stop" -> if (method == Method.POST) stopRecording() else notAllowed()
+            "/pause" -> if (method == Method.POST) pauseRecording() else notAllowed()
+            "/resume" -> if (method == Method.POST) resumeRecording() else notAllowed()
             else -> json(Response.Status.NOT_FOUND, """{"error":"no such endpoint"}""")
         }
     }
@@ -106,30 +113,80 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
         return json(Response.Status.OK, statusJson())
     }
 
-    private fun startRecording(): Response {
+    /**
+     * Starts recording, on the terms an optional JSON [body] asks for — see [RecordingConfig]. The
+     * config is stored before the service is told anything, so it is what the recording picks up and
+     * what a start with no body reuses next time.
+     *
+     * A start against a recording that is already running is still idempotent: the config is applied
+     * live and the effective one comes back in the response, which is how a client learns what it
+     * actually got without a second request. A paused recording is resumed, since a start is a
+     * request for a running recording.
+     */
+    private fun startRecording(body: String?): Response {
         // Same gate as the Start button: no location means nothing to record, and no notification
         // permission means a recording nobody can see is running. `canRecord` in the body says so.
         if (!Setup.canRecord(app)) {
             return json(Response.Status.FORBIDDEN, statusJson("setup incomplete"))
         }
-        if (!RecorderState.recording) {
-            try {
-                RecordingService.start(app)
-            } catch (e: Exception) {
-                // Android 12+ refuses a background foreground-service start unless the app is
-                // exempt from battery optimisation — which is what batteryExempt reports.
-                Log.w(TAG, "could not start recording", e)
-                return json(Response.Status.CONFLICT, statusJson(e.javaClass.simpleName))
-            }
-            awaitRecording(true)
+
+        val config = try {
+            RecordingConfig.parse(body, RecordingConfig.load(app))
+        } catch (e: JSONException) {
+            Log.w(TAG, "could not read the config in POST /start", e)
+            return json(Response.Status.BAD_REQUEST, statusJson("bad config"))
         }
+        // Stored before the service is told anything: this is where the recording reads it from, and
+        // where it stays for the next start that sends no body — including one from the app's own
+        // button. It is also what `/status` reports while nothing is recording.
+        RecordingConfig.save(app, config)
+
+        if (RecorderState.recording) {
+            RecordingService.reconfigure(app)
+            // The service owns the config of a running recording, so wait for it to have adopted this
+            // one — and to have resumed, if it was paused. Then the response says what is actually
+            // running rather than what was asked for.
+            await { RecorderState.config == config && !RecorderState.paused }
+            return json(Response.Status.OK, statusJson())
+        }
+
+        try {
+            RecordingService.start(app)
+        } catch (e: Exception) {
+            // Android 12+ refuses a background foreground-service start unless the app is
+            // exempt from battery optimisation — which is what batteryExempt reports.
+            Log.w(TAG, "could not start recording", e)
+            return json(Response.Status.CONFLICT, statusJson(e.javaClass.simpleName))
+        }
+        await { RecorderState.recording }
         return json(Response.Status.OK, statusJson())
     }
 
     private fun stopRecording(): Response {
         if (RecorderState.recording) {
             RecordingService.stop(app)
-            awaitRecording(false)
+            await { !RecorderState.recording }
+        }
+        return json(Response.Status.OK, statusJson())
+    }
+
+    /**
+     * Stops consuming fixes and keeps the session: no foreground-service restart, no re-acquisition
+     * of a notification, and nothing for Android 12+ to refuse — which is what a page faking a pause
+     * with a stop and a later start is exposed to.
+     */
+    private fun pauseRecording(): Response {
+        if (RecorderState.recording && !RecorderState.paused) {
+            RecordingService.pause(app)
+            await { RecorderState.paused }
+        }
+        return json(Response.Status.OK, statusJson())
+    }
+
+    private fun resumeRecording(): Response {
+        if (RecorderState.recording && RecorderState.paused) {
+            RecordingService.resume(app)
+            await { !RecorderState.paused }
         }
         return json(Response.Status.OK, statusJson())
     }
@@ -144,11 +201,22 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
      * `version` is here so a page can tell which recorder it is talking to, and say "too old for
      * this" rather than calling an endpoint that will not answer. `generation` is how it notices
      * that the track it holds was thrown away — see [PointStore.generation].
+     *
+     * `config` is the *effective* recording config, after clamping. Its presence is also the feature
+     * detection for `POST /start` taking a body at all: a client that gets none back knows the
+     * recorder it is talking to ignored what it sent.
+     *
+     * Every key here is written out literally, both because R8 renames everything it can and because
+     * `checkApiDocs` reads this function to decide what API.md has to document.
      */
     private fun statusJson(error: String? = null): String {
         val vendor = Vendor.current
-        val sb = StringBuilder(320)
+        // A running recording's config is whatever it is running with, which is the service's to
+        // report; with nothing running it is what the next start will pick up, which is on disk.
+        val config = if (RecorderState.recording) RecorderState.config else RecordingConfig.load(app)
+        val sb = StringBuilder(420)
         sb.append("{\"recording\":").append(RecorderState.recording)
+        sb.append(",\"paused\":").append(RecorderState.paused)
         sb.append(",\"lastSeq\":").append(store.maxSeq())
         sb.append(",\"count\":").append(store.count())
         sb.append(",\"generation\":").append(store.generation())
@@ -168,6 +236,12 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
         sb.append(",\"acknowledged\":").append(Setup.oemAcknowledged(app))
         sb.append("},\"canRecord\":").append(Setup.canRecord(app))
         sb.append(",\"setupComplete\":").append(Setup.complete(app))
+        sb.append(",\"config\":{\"intervalMs\":").append(config.intervalMs)
+        sb.append(",\"minDistanceM\":").append(config.minDistanceM)
+        sb.append(",\"maxAccuracyM\":").append(config.maxAccuracyM)
+        sb.append(",\"priority\":")
+        quoted(sb, config.priority.id)
+        sb.append('}')
         if (error != null) {
             sb.append(",\"error\":")
             quoted(sb, error)
@@ -216,10 +290,32 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
     private fun longParam(session: IHTTPSession, name: String): Long? =
         session.parameters[name]?.firstOrNull()?.toLongOrNull()
 
-    /** Service start/stop is asynchronous; wait briefly so the response reports the settled state. */
-    private fun awaitRecording(target: Boolean) {
+    /**
+     * The raw request body, or null when there is none. NanoHTTPD hands a body it cannot recognise as
+     * a form over as a pseudo-file named `postData`, which is exactly what a JSON body is.
+     *
+     * A body that cannot be read is treated as no body at all rather than as an error: the failures
+     * here are truncated requests and dropped connections, and there is nobody left to answer.
+     */
+    private fun body(session: IHTTPSession): String? {
+        val files = HashMap<String, String>()
+        return try {
+            session.parseBody(files)
+            files["postData"]?.takeIf { it.isNotBlank() }
+        } catch (e: Exception) {
+            Log.w(TAG, "could not read the request body of ${session.uri}", e)
+            null
+        }
+    }
+
+    /**
+     * Service commands are asynchronous; wait briefly so the response reports the settled state and
+     * not a hopeful guess. Times out rather than hanging — a status object that turns out to be one
+     * transition behind is better than a request that never answers.
+     */
+    private fun await(settled: () -> Boolean) {
         val deadline = SystemClock.elapsedRealtime() + STATE_TIMEOUT_MS
-        while (RecorderState.recording != target && SystemClock.elapsedRealtime() < deadline) {
+        while (!settled() && SystemClock.elapsedRealtime() < deadline) {
             try {
                 Thread.sleep(STATE_POLL_MS)
             } catch (e: InterruptedException) {

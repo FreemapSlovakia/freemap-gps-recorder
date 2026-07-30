@@ -37,6 +37,17 @@
             android:minWidth="160dp"
             android:text="@string/start" />
 
+        <!-- Invisible rather than gone while nothing is recording, so starting does not make the
+             checklist below jump about. -->
+        <Button
+            android:id="@+id/pause"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:minWidth="160dp"
+            android:text="@string/pause"
+            android:visibility="invisible" />
+
         <TextView
             android:id="@+id/warning"
             android:layout_width="match_parent"

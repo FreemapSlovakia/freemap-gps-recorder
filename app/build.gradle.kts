@@ -99,6 +99,7 @@ android {
 }
 
 val apiSource = file("src/main/java/sk/freemap/gpsrecorder/RecorderApi.kt")
+val pointSource = file("src/main/java/sk/freemap/gpsrecorder/Point.kt")
 val apiDoc = rootProject.file("API.md")
 
 /**
@@ -110,9 +111,10 @@ val apiDoc = rootProject.file("API.md")
  * that what is written down about it is true. The prose still has to be kept honest by hand.
  */
 tasks.register("checkApiDocs") {
-    description = "Fails when API.md and RecorderApi.kt disagree about the HTTP surface."
+    description = "Fails when API.md and the API sources disagree about the HTTP surface."
     group = "verification"
     inputs.file(apiSource)
+    inputs.file(pointSource)
     inputs.file(apiDoc)
     outputs.file(layout.buildDirectory.file("tmp/checkApiDocs.stamp"))
 
@@ -120,6 +122,13 @@ tasks.register("checkApiDocs") {
         val source = apiSource.readText()
         val doc = apiDoc.readText()
         val problems = mutableListOf<String>()
+
+        /** The backticked names in the leading cell of every row of a markdown table. */
+        fun documentedNames(section: String): Set<String> =
+            Regex("""(?m)^\|([^|]*)\|""").findAll(section)
+                .flatMap { row -> Regex("""`([\w.]+)`""").findAll(row.groupValues[1]) }
+                .flatMap { it.groupValues[1].split(".").asSequence() }
+                .toSet()
 
         // Endpoint headings in the document read `### GET /track`.
         val headings = Regex("""(?m)^### ([A-Z]+) (/\w+)$""").findAll(doc)
@@ -151,11 +160,32 @@ tasks.register("checkApiDocs") {
         val statusFn = source.substringAfter("private fun statusJson(").substringBefore("private fun quoted(")
         val codeKeys = Regex("""\\"(\w+)\\":""").findAll(statusFn).map { it.groupValues[1] }.toSortedSet()
         val statusSection = doc.substringAfter("### GET /status").substringBefore("\n### ")
-        val docFields = Regex("""(?m)^\| `([\w.]+)`""").findAll(statusSection)
-            .flatMap { it.groupValues[1].split(".").asSequence() }
-            .toSet()
+        val docFields = documentedNames(statusSection)
         (codeKeys - docFields).forEach {
             problems += "GET /status returns \"$it\", which has no row in the API.md field table"
+        }
+
+        // And every column Point.FIELDS names has to have a row under `### GET /track`, in both
+        // directions. Points are encoded positionally, so a client decoding by a field list that has
+        // drifted gets plausible nonsense rather than an error — which makes this the one table here
+        // where a stale document is actively dangerous rather than merely unhelpful. The comparison
+        // starts at the field table's own header, so the `since` parameter above it does not count.
+        var pointFieldCount = 0
+        val fields = Regex("""val FIELDS = listOf\(([^)]*)\)""").find(pointSource.readText())
+        if (fields == null) {
+            problems += "no `val FIELDS = listOf(…)` found in Point.kt"
+        } else {
+            val codeFields =
+                Regex("""\"(\w+)\"""").findAll(fields.groupValues[1]).map { it.groupValues[1] }.toSortedSet()
+            pointFieldCount = codeFields.size
+            val trackSection = doc.substringAfter("### GET /track").substringBefore("\n### ")
+            val docPointFields = documentedNames(trackSection.substringAfter("| field | |"))
+            (codeFields - docPointFields).forEach {
+                problems += "GET /track returns \"$it\", which has no row in the API.md field table"
+            }
+            (docPointFields - codeFields).forEach {
+                problems += "API.md documents a point field \"$it\", which Point.FIELDS does not have"
+            }
         }
 
         if (problems.isNotEmpty()) {
@@ -164,7 +194,8 @@ tasks.register("checkApiDocs") {
             )
         }
         logger.lifecycle(
-            "checkApiDocs: ${codePaths.size} endpoints, ${codeKeys.size} status fields, all documented"
+            "checkApiDocs: ${codePaths.size} endpoints, ${codeKeys.size} status fields, " +
+                "$pointFieldCount point fields, all documented"
         )
     }
 }

@@ -61,12 +61,47 @@ ever lost or compromised.
 ## How it works
 
 `RecordingService` is a foreground service with `foregroundServiceType="location"` and a persistent
-notification carrying a **Stop** action. It requests fixes at 1 Hz with
-`PRIORITY_HIGH_ACCURACY` and holds a partial wake lock for the duration of the recording — without
-it, delivery becomes unreliable once the screen goes off.
+notification carrying **Pause**/**Resume** and **Stop** actions. It requests fixes on the terms
+`RecordingConfig` sets — 1 Hz at `PRIORITY_HIGH_ACCURACY` by default — and holds a partial wake lock
+while it is consuming them, because without it delivery becomes unreliable once the screen goes off.
 
 Fixes are delivered onto a dedicated `HandlerThread`, so SQLite writes never touch the main thread.
 `PointStore` appends each one through a single reused compiled statement.
+
+The service has **two states, not one**, and the distinction is the whole of pause. *Tracking* is the
+session: the service is up, the notification is showing, the track is open. *Consuming* is whether
+fixes are being taken at all. A pause drops the second and keeps the first, so a break costs no
+foreground-service restart — which on Android 12+ is the single most likely way a resumed recording
+fails, since a backgrounded app is not allowed to start one. It also drops the GNSS subscription and
+the wake lock, because a pause that kept driving the receiver would save nothing on the break it
+exists for; the price is a re-acquisition on resume, and that break is what `seg` records.
+
+`RecordingConfig` — the cadence, the displacement gate, the accuracy floor and the priority — is set
+over the API and persisted, so the app's own Start button records with whatever the website last asked
+for. It is applied by re-subscribing rather than by restarting anything, which is why `POST /start`
+against a running recording can stay idempotent instead of having to refuse a config it disagrees with.
+Everything it can express is enforced here rather than in whatever page is watching: a fix filtered out
+on this side is one that never costs battery to keep or disk to store, and every client then sees the
+same track.
+
+`GnssMonitor` picks up what the fused client drops: the satellite count, and the geoid separation that
+turns an ellipsoidal altitude into one above mean sea level. Neither survives the trip through Play
+services — a `FusedLocationProviderClient` `Location` has no satellite information at all, and on an
+API 36 emulator `hasMslAltitude()` is false on it even though the platform's own providers report the
+figure. So both are read from the platform's own GNSS and married up by time.
+
+It asks for nothing of its own. The status callback reports on a receiver the recording has already
+turned on, and locations come from `PASSIVE_PROVIDER`, which by definition only delivers what some
+other request has already paid for — so a recording at `priority: low` sees nothing and honestly says
+so. Both readings go stale deliberately, on windows that match what they describe: ten seconds for the
+satellite count, which describes the receiver, and ten minutes for the separation, which describes the
+ground and holds across a tunnel.
+
+The separation, and not the MSL altitude, is what gets carried across. An MSL altitude belongs to the
+fix that carried it and would be wrong here by the difference between the two fixes' altitudes — 40 m
+of error on the emulator, where the raw GNSS fix and the fused one disagree by exactly that. The
+separation is geometry of the geoid, and subtracting it from *this* fix's own `alt` reproduces the
+platform's own figure to the last decimal.
 
 ## Setup
 
@@ -136,12 +171,25 @@ alive while recording. The server comes up with the process rather than with the
 Points are encoded positionally rather than as objects because a long track is mostly repeated key
 names otherwise; coordinates are rounded to 7 decimals and metre-scale values to 2, past which it is
 float noise that still costs bytes on every point. An absent field is `null` and never `0`, since an
-unreported speed and a genuine standstill are different facts.
+unreported speed and a genuine standstill are different facts. The `fields` list is append-only, which
+is what makes a new column free: clients decode by it, so one they do not know is one they ignore.
+
+Both altitudes are on the wire because they answer different questions. `alt` is the raw ellipsoidal
+value the platform reports and the one that round-trips losslessly; `altMsl` is metres above mean sea
+level, which is what GPX `<ele>` means and what agrees with the DEM the map uses — some 42 m apart over
+Slovakia. Only Android 14 can tell them apart, so `altMsl` is null below it and there is nothing to fall
+back on but `alt`.
 
 `seq` is SQLite `AUTOINCREMENT`, so ids are never reused even after `DELETE /track`. That is what
 makes clearing safe for clients: a stale `?since=` can come back empty, but it can never come back
 with *different* points wearing ids the client already has. `generation` in `/status` is the signal
 that a clear happened at all.
+
+`seg` exists because the recorder is the only party that actually knows where the breaks are. A client
+can guess from a gap in `ts`, and it will be wrong at both ends — a tunnel looks like a break and a
+twenty-second pause looks like none — and every client would have to guess the same way. The ordinal is
+kept in preferences rather than derived from the track, so the one break nothing else would notice is
+recorded too: a process kill and the `START_STICKY` restart that follows it.
 
 CORS is an allowlist because any site you visit could otherwise talk to a recorder running on your
 phone. The list lives in `ALLOWED_ORIGINS` in `RecorderApi.kt`; adding a hostname means adding it
@@ -290,13 +338,25 @@ One row per fix in `points`, in the app's private `track.db`:
 | `seq` | `INTEGER PRIMARY KEY AUTOINCREMENT` — monotonic, never reused, continues across sessions |
 | `ts` | fix time, epoch milliseconds |
 | `lat`, `lon` | degrees |
-| `altitude` | metres, `NULL` when the fix has none |
+| `altitude` | metres above the WGS84 ellipsoid, `NULL` when the fix has none |
 | `accuracy` | metres, `NULL` when the fix has none |
 | `speed` | m/s, `NULL` when the fix has none |
 | `bearing` | degrees, `NULL` when the fix has none |
+| `altitude_msl` | metres above mean sea level, `NULL` below Android 14 |
+| `altitude_accuracy` | metres, `NULL` when the fix has none |
+| `speed_accuracy` | m/s, `NULL` when the fix has none |
+| `bearing_accuracy` | degrees, `NULL` when the fix has none |
+| `satellites` | used in the fix, `NULL` when GNSS has not reported recently enough to say |
+| `provider` | `gps`, `fused`, `network`, or `NULL` |
+| `segment` | ordinal, bumped on every start and resume. `0` on rows recorded before schema 2 |
 
 Optional fields are stored as `NULL` rather than `0` when the platform reports them as absent, so a
 stationary fix is not mistaken for one heading due north.
+
+Schema version 2 added everything from `altitude_msl` down, by `ALTER TABLE ADD COLUMN` on the existing
+table. An upgrade never rewrites or drops a recorded track — someone may have been in the middle of one
+when the update landed — so rows from before it keep `NULL` in the new columns and `segment` `0`, which
+is an honest "not known" rather than an invented value.
 
 To inspect a recording on a debug build:
 
@@ -414,3 +474,63 @@ backtick pairing and the JSON example still contained the word.
 Two things were not driven end to end. The manifest URL is not published yet, so the only server this
 has spoken to is a local one. And the install-source prompt itself is Android's, on a first browser
 download — the help screen describes it but nothing here has been installed from a browser.
+
+Everything 0.6 added was exercised on the API 36 emulator, both as a debug build and as the signed,
+minified release APK.
+
+**The schema 2 upgrade was tested over a real track, which is the one change here that could lose a
+recording rather than merely misreport one.** Five points were recorded on 0.5, and the pulled database
+confirmed `user_version` 1 with the original eight columns. Installing 0.6 over the top with
+`install -r` left `count` and `lastSeq` at 5 and `generation` at 0, and `/track` served all five points
+under the new fifteen-field header with `null` in every added column and `seg` `0` — not a fabricated
+value, and not a rewritten row.
+
+Pause and resume behave as documented, and the emulator's mock provider makes the proof exact: with
+three fixes fed before a pause, **six during it** and more after, `/track` shows the three in one
+segment, the post-resume points in the next, and nothing whatsoever from the paused window. `recording`
+stays `true` throughout while `paused` flips, the log reads `paused at 42 points` then
+`resumed into segment 23`, and the notification title changes from *Recording track* to *Recording
+paused* with two actions in both states. The app's own button was driven by `uiautomator`: tapping it
+takes the screen to *Paused*/**RESUME** and back, in step with what the API reports.
+
+A `START_STICKY` restart is the break nothing else would record, so it was forced — `run-as kill -9` on
+the recording process, since `am kill` will not touch a foreground service. The system restarted the
+service, which came back at `tracking started in segment 22, 41 points stored`, one segment on from the
+21 it died in.
+
+The config was exercised key by key. A full body is applied and echoed; a body naming one key changes
+one thing; an explicit `null` clears the accuracy floor; no body at all reuses what was stored. Clamping
+holds in both directions — `intervalMs` of `1` comes back `200`, `86400000` comes back `3600000`, a
+negative `maxAccuracyM` comes back `null` — and an unknown key is ignored while a `priority` of `turbo`
+leaves the previous one alone. A body of `hello` and an `intervalMs` of `"fast"` both answer `400` with
+`"error":"bad config"` and leave the stored config untouched. The accuracy floor is enforced on this
+side and not merely hidden: against fixes reporting 5 m, a floor of 3 m recorded **0** points and a
+floor of 10 m recorded 3.
+
+`altMsl` turned up the one genuine surprise, and it changed the implementation. Play services'
+`FusedLocationProviderClient` reports `hasMslAltitude()` **false** on API 36, even though the platform's
+own `gps` and `fused` providers both carry `mslAlt` — so reading it straight off the fix, which is what
+the obvious implementation does, yields `null` forever. The recorder now takes the geoid separation from
+a passive GNSS fix instead and subtracts it from each fix's own `alt`. That reproduces the platform's
+own answer exactly: for `alt=300.0` the recorder stored `260.12` where `dumpsys location` reports
+`mslAlt=260.1202623946683`. It is `null` for the first points of a recording, until a GNSS fix has been
+along — which is visible in the transcript as the segment boundary where it starts appearing.
+
+`sat` reads `0` on this emulator throughout, which is the honest answer rather than a missing one: the
+GNSS status callback does fire, and `dumpsys` confirms `satellites=0` in the fix's own extras. That the
+callback fires at all is what the emulator can show; a non-zero count needs real sky.
+
+The minified release APK was checked last, since the positional encoding is the thing R8 could quietly
+break. It installs as `versionName=0.6` with `PackageSignatures{version:3}`, serves the full
+fifteen-field header, records across a pause into a new segment, computes `altMsl`, and returns
+`"priority":"high"` and `"src":"fused"` intact — the enum `id` and the field names surviving shrinking is
+exactly what writing them out literally is for. `checkApiDocs` was extended to cover the point fields
+too, and was confirmed to fail both when a documented row is removed and when API.md invents a field
+the code does not have.
+
+Two things this emulator cannot show. `priority: "balanced"` records nothing on it, because its
+`network_location_provider` is disabled — the request is accepted and the config reported, but no
+provider answers, so the cadence each priority actually produces still needs real hardware. And `install
+-r` twice left Play services not delivering to the freshly replaced process for one recording attempt;
+it recovered on the next start, and it is worth knowing that a zero-point recording immediately after an
+update may be that rather than a bug.

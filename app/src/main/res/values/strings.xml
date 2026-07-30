@@ -3,14 +3,18 @@
     <string name="app_name">Freemap GPS Recorder</string>
 
     <string name="state_recording">Recording</string>
+    <string name="state_paused">Paused</string>
     <string name="state_idle">Not recording</string>
     <string name="points_fmt">%1$d points</string>
 
     <string name="start">Start</string>
     <string name="stop">Stop</string>
+    <string name="pause">Pause</string>
+    <string name="resume">Resume</string>
 
     <string name="notif_channel">Track recording</string>
     <string name="notif_title">Recording track</string>
+    <string name="notif_title_paused">Recording paused</string>
     <string name="notif_text">%1$d points</string>
 
     <!-- Setup checklist -->

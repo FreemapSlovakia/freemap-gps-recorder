@@ -5,8 +5,8 @@ import org.json.JSONObject
 import com.google.android.gms.location.Priority as GmsPriority
 
 /**
- * What gets recorded — the cadence, the displacement gate, the accuracy floor, and how hard the
- * platform is asked to work for a fix.
+ * What gets recorded — the cadence, the displacement gate, the accuracy floor, which provider the
+ * fixes come from, and how hard the platform is asked to work for one.
  *
  * These belong on this side of the wire rather than in whatever page is watching: filtering in the
  * browser still burns the battery and still fills the database, and every other client then sees a
@@ -21,6 +21,7 @@ data class RecordingConfig(
     val minDistanceM: Double = 0.0,
     val maxAccuracyM: Double? = null,
     val priority: Priority = Priority.HIGH,
+    val source: Source = Source.FUSED,
 ) {
 
     /**
@@ -35,6 +36,32 @@ data class RecordingConfig(
 
         companion object {
             fun of(id: String?): Priority? = values().firstOrNull { it.id == id }
+        }
+    }
+
+    /**
+     * Where the fixes come from. Both answer the same question and differ in what they are willing
+     * to invent between measurements, which is a choice only the person recording can make.
+     *
+     * [FUSED] is Play services blending GNSS with wifi, cell and the phone's own sensors: the better
+     * horizontal position in a street or under trees, and the better *stated* vertical accuracy —
+     * but its altitude is a modelled figure refreshed every few seconds and repeated verbatim in
+     * between, so a 1 Hz recording gets one altitude in five and a track profile drawn in steps.
+     *
+     * [GPS] is the platform's own receiver with nothing in front of it: an altitude recomputed for
+     * every epoch, noisier by several metres but continuous, and each fix's own `mslAlt` rather than
+     * one reconstructed from a separation. It needs no Play services at all.
+     *
+     * [id] matches the `src` recorded on the points a source produces, so a track says which one it
+     * came from without anybody having to remember what was asked for.
+     */
+    enum class Source(val id: String) {
+        FUSED("fused"),
+        GPS("gps"),
+        ;
+
+        companion object {
+            fun of(id: String?): Source? = values().firstOrNull { it.id == id }
         }
     }
 
@@ -60,7 +87,11 @@ data class RecordingConfig(
         maxAccuracyM = maxAccuracyM
             ?.takeIf { it.isFinite() && it > 0.0 }
             ?.coerceAtMost(MAX_ACCURACY_M),
+        // Nothing to clamp about either enum: an unparseable one never becomes a value in the first
+        // place. `priority` is carried even at `source: gps`, where it says nothing about the
+        // recording in progress but is still what a later switch back to `fused` will use.
         priority = priority,
+        source = source,
     )
 
     private fun Double.finiteOrZero() = if (isFinite()) this else 0.0
@@ -79,6 +110,7 @@ data class RecordingConfig(
         private const val KEY_DISTANCE = "minDistanceM"
         private const val KEY_MAX_ACCURACY = "maxAccuracyM"
         private const val KEY_PRIORITY = "priority"
+        private const val KEY_SOURCE = "source"
 
         /**
          * Reads a `POST /start` body over [base] — normally the stored config, so a body naming one
@@ -86,9 +118,10 @@ data class RecordingConfig(
          * keeps an older page and a newer recorder talking in both directions.
          *
          * A malformed body or a non-numeric value throws [org.json.JSONException]: recording with
-         * settings nobody asked for is worse than answering `400`. An unrecognised `priority`
-         * *value* is the one exception — it leaves the previous priority in place, and the caller
-         * sees that in the effective config it gets back.
+         * settings nobody asked for is worse than answering `400`. An unrecognised `priority` or
+         * `source` *value* is the exception — it leaves the previous one in place, and the caller
+         * sees that in the effective config it gets back. That is what lets a page offer a source
+         * this recorder has never heard of without the request failing outright.
          */
         fun parse(body: String?, base: RecordingConfig): RecordingConfig {
             if (body == null) return base.clamped()
@@ -110,6 +143,12 @@ data class RecordingConfig(
                     } else {
                         base.priority
                     },
+                source =
+                    if (json.has(KEY_SOURCE)) {
+                        Source.of(json.optString(KEY_SOURCE)) ?: base.source
+                    } else {
+                        base.source
+                    },
             ).clamped()
         }
 
@@ -121,6 +160,9 @@ data class RecordingConfig(
                 // 0 is how "no floor" is stored, since preferences have no nullable float.
                 maxAccuracyM = prefs.getFloat(KEY_MAX_ACCURACY, 0f).toDouble().takeIf { it > 0.0 },
                 priority = Priority.of(prefs.getString(KEY_PRIORITY, null)) ?: Priority.HIGH,
+                // Absent for anyone who recorded before there was a choice, and fused is what they
+                // were getting.
+                source = Source.of(prefs.getString(KEY_SOURCE, null)) ?: Source.FUSED,
             ).clamped()
         }
 
@@ -135,6 +177,7 @@ data class RecordingConfig(
                 .putFloat(KEY_DISTANCE, config.minDistanceM.toFloat())
                 .putFloat(KEY_MAX_ACCURACY, config.maxAccuracyM?.toFloat() ?: 0f)
                 .putString(KEY_PRIORITY, config.priority.id)
+                .putString(KEY_SOURCE, config.source.id)
                 .commit()
         }
 

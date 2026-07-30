@@ -9,6 +9,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -57,25 +60,42 @@ class RecordingService : Service() {
 
     private var lastNotifiedAt = 0L
 
+    // Which subscription is currently open, so a changed `source` can close the one it is leaving.
+    // Only ever touched on the main thread, where every subscribe and unsubscribe happens.
+    private var subscribed: RecordingConfig.Source? = null
+
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
-            // removeLocationUpdates is asynchronous, so a fix can still land after a stop.
-            if (!tracking) return
-            val store = store ?: return
             var appended = false
             for (loc in result.locations) {
-                val accuracy = loc.accuracy.toDouble().takeIf { loc.hasAccuracy() }
-                // The accuracy floor is applied here rather than being left to whoever reads the
-                // track: a fix filtered out on this side is one that never reaches the database.
-                if (!config.accepts(accuracy)) continue
-                val point = store.append(loc, segment, gnss?.satellites(), gnss?.geoidSeparation())
-                RecorderState.lastSeq = point.seq
-                RecorderState.pointCount++
-                RecorderBus.publishFix(point)
-                appended = true
+                if (append(loc)) appended = true
             }
             if (appended) maybeRefreshNotification()
         }
+    }
+
+    /** The same fixes, straight off the platform's receiver, when `source` is `gps`. */
+    private val gpsListener = LocationListener { loc ->
+        if (append(loc)) maybeRefreshNotification()
+    }
+
+    /**
+     * Stores one fix, whichever subscription delivered it, and returns whether it was kept. Called on
+     * the point-writer thread.
+     */
+    private fun append(loc: Location): Boolean {
+        // removeLocationUpdates is asynchronous, so a fix can still land after a stop.
+        if (!tracking) return false
+        val store = store ?: return false
+        val accuracy = loc.accuracy.toDouble().takeIf { loc.hasAccuracy() }
+        // The accuracy floor is applied here rather than being left to whoever reads the track: a
+        // fix filtered out on this side is one that never reaches the database.
+        if (!config.accepts(accuracy)) return false
+        val point = store.append(loc, segment, gnss?.satellites(), gnss?.geoidSeparation())
+        RecorderState.lastSeq = point.seq
+        RecorderState.pointCount++
+        RecorderBus.publishFix(point)
+        return true
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -188,9 +208,11 @@ class RecordingService : Service() {
     }
 
     /**
-     * Subscribes to fixes for the current [config], or re-subscribes for a changed one: Play
-     * services replaces the request belonging to a callback rather than adding a second one, so this
-     * is how a config is applied live without the session noticing.
+     * Subscribes to fixes for the current [config], or re-subscribes for a changed one. Both
+     * subscriptions replace rather than accumulate when the same callback re-registers — Play
+     * services by the `LocationCallback`, the platform by the `LocationListener` — so this is how a
+     * config is applied live without the session noticing. A changed `source` is the one case where
+     * something has to be released, and [detach] does it before the new one opens.
      */
     private fun subscribe() {
         val worker = worker ?: return
@@ -200,16 +222,46 @@ class RecordingService : Service() {
             .apply { setReferenceCounted(false) }
         wakeLock?.let { if (!it.isHeld) it.acquire() }
 
-        val request = LocationRequest.Builder(config.priority.platform, config.intervalMs)
-            .setMinUpdateIntervalMillis(config.intervalMs)
-            .setMinUpdateDistanceMeters(config.minDistanceM.toFloat())
-            .setWaitForAccurateLocation(false)
-            .setGranularity(Granularity.GRANULARITY_FINE)
-            .build()
+        subscribed?.takeIf { it != config.source }?.let(::detach)
 
-        val client = LocationServices.getFusedLocationProviderClient(this).also { this.client = it }
+        // Both requests stay in this one method because lint recognises a permission call as handled
+        // only where the SecurityException is caught, and there is exactly one thing to do about it.
         try {
-            client.requestLocationUpdates(request, callback, worker.looper)
+            when (config.source) {
+                RecordingConfig.Source.FUSED -> {
+                    val request = LocationRequest.Builder(config.priority.platform, config.intervalMs)
+                        .setMinUpdateIntervalMillis(config.intervalMs)
+                        .setMinUpdateDistanceMeters(config.minDistanceM.toFloat())
+                        .setWaitForAccurateLocation(false)
+                        .setGranularity(Granularity.GRANULARITY_FINE)
+                        .build()
+
+                    val client = LocationServices.getFusedLocationProviderClient(this)
+                        .also { this.client = it }
+                    client.requestLocationUpdates(request, callback, worker.looper)
+                }
+
+                // The platform's own receiver, with no Play services in front of it. `priority` has
+                // nothing to say here — this provider has one mode, and asking for it is asking for
+                // the receiver — so the cadence and the displacement gate are the whole request.
+                RecordingConfig.Source.GPS -> {
+                    val manager = getSystemService(LocationManager::class.java)
+                    // Not a reason to refuse: the receiver can be switched on again while the
+                    // recording runs, and the subscription starts delivering when it is. But a
+                    // recording that stores nothing should say why in the log.
+                    if (!manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                        Log.w(TAG, "the gps provider is off; nothing will be recorded until it is on")
+                    }
+                    manager.requestLocationUpdates(
+                        LocationManager.GPS_PROVIDER,
+                        config.intervalMs,
+                        config.minDistanceM.toFloat(),
+                        gpsListener,
+                        worker.looper,
+                    )
+                }
+            }
+            subscribed = config.source
             // Satellite counts come from the raw receiver, which the fixes above are what turn on.
             gnss = (gnss ?: GnssMonitor(this)).also { it.start(Handler(worker.looper)) }
         } catch (e: SecurityException) {
@@ -219,9 +271,22 @@ class RecordingService : Service() {
         }
     }
 
+    /** Releases whichever subscription [source] opened. Safe against one that never opened. */
+    private fun detach(source: RecordingConfig.Source) {
+        when (source) {
+            RecordingConfig.Source.FUSED -> {
+                client?.removeLocationUpdates(callback)
+                client = null
+            }
+
+            RecordingConfig.Source.GPS ->
+                getSystemService(LocationManager::class.java).removeUpdates(gpsListener)
+        }
+        subscribed = null
+    }
+
     private fun unsubscribe() {
-        client?.removeLocationUpdates(callback)
-        client = null
+        subscribed?.let(::detach)
 
         gnss?.stop()
 

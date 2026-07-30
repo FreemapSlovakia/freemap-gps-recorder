@@ -230,6 +230,8 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
         sb.append(",\"maxAccuracyM\":").append(config.maxAccuracyM)
         sb.append(",\"priority\":")
         quoted(sb, config.priority.id)
+        sb.append(",\"source\":")
+        quoted(sb, config.source.id)
         sb.append('}')
         if (error != null) {
             sb.append(",\"error\":")

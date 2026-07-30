@@ -38,7 +38,7 @@ Takes no parameters. Always answers `200` with the status object:
  "batteryExempt":true,
  "oem":{"vendor":"xiaomi","needed":true,"acknowledged":false},
  "canRecord":true,"setupComplete":false,
- "config":{"intervalMs":1000,"minDistanceM":0.0,"maxAccuracyM":null,"priority":"high"}}
+ "config":{"intervalMs":1000,"minDistanceM":0.0,"maxAccuracyM":null,"priority":"high","source":"fused"}}
 ```
 
 | field | |
@@ -64,7 +64,8 @@ Takes no parameters. Always answers `200` with the status object:
 | `config.intervalMs` | desired interval between fixes |
 | `config.minDistanceM` | minimum displacement before a fix is recorded |
 | `config.maxAccuracyM` | fixes worse than this are dropped; `null` means everything is kept |
-| `config.priority` | `"high"`, `"balanced"` or `"low"` |
+| `config.priority` | `"high"`, `"balanced"` or `"low"`; applies to `source: "fused"` only |
+| `config.source` | `"fused"` or `"gps"` — which provider the fixes come from |
 | `error` | present only on a failed `/start` or `DELETE /track` — see those endpoints |
 
 `canRecord` is what to check before offering a start button, and it is a promise rather than a guess:
@@ -137,12 +138,13 @@ wants, since GPX `<ele>` is metres above mean sea level and the geoid separation
 Slovakia. Only Android 14 and newer knows the separation at all, so on older devices `altMsl` is
 `null` and falling back to `alt` is all there is.
 
-Even on Android 14+ it does not arrive with the fix. The fixes come from Play services'
-`FusedLocationProviderClient`, and the `Location` it hands over reports no MSL altitude — verified on
-an API 36 emulator, where the platform's own providers carry the figure and the fused client's copy
-does not. So the recorder reads the **separation** off a raw GNSS fix and subtracts it from this fix's
-own `alt`. That is why `altMsl` is `null` for the first few points of a recording, until a GNSS fix has
-been along, and why it stays `null` for a whole recording at `priority: "low"` that never turns the
+At `source: "gps"` it arrives with the fix and is used as it stands. At `source: "fused"` it does not,
+even on Android 14+: those fixes come from Play services' `FusedLocationProviderClient`, and the
+`Location` it hands over reports no MSL altitude — verified on an API 36 emulator, where the platform's
+own providers carry the figure and the fused client's copy does not. So the recorder reads the
+**separation** off a raw GNSS fix and subtracts it from this fix's own `alt`. That is why `altMsl` is
+`null` for the first few points of a fused recording, until a GNSS fix has been along, and why it stays
+`null` for a whole recording at `priority: "low"` that never turns the
 receiver on. Reading the separation rather than copying the MSL altitude is deliberate: the altitude
 belongs to the fix that carried it, and would be wrong here by the difference between the two fixes'
 altitudes, while the separation is a property of the ground and changes by metres over kilometres.
@@ -285,7 +287,8 @@ directions.
   "intervalMs": 1000,      // desired interval between fixes
   "minDistanceM": 0,       // minimum displacement before a fix is recorded
   "maxAccuracyM": 50,      // drop fixes whose `acc` is worse than this; null = keep everything
-  "priority": "high"       // "high" | "balanced" | "low"
+  "priority": "high",      // "high" | "balanced" | "low" — fused only
+  "source": "fused"        // "fused" | "gps"
 }
 ```
 
@@ -298,6 +301,31 @@ about bad fixes, not about silent ones.
 network-derived fixes, `low` asks for as little as the platform will do. An unrecognised value leaves
 the previous priority alone rather than failing the request, and you see that in the `config` you get
 back.
+
+`source` says **where the fixes come from**, and the two answers differ in what they will invent
+between measurements. The `src` on every recorded point repeats it, so a track always says which one
+produced it.
+
+| | `"fused"` (default) | `"gps"` |
+| --- | --- | --- |
+| provider | Play services' `FusedLocationProviderClient` | the platform's `gps` provider, direct |
+| position | GNSS blended with wifi, cell and the phone's sensors — better in a street or under trees | raw receiver output, nothing in front of it |
+| altitude | a modelled figure refreshed every few seconds and **repeated verbatim in between** | recomputed every epoch |
+| `altMsl` | reconstructed from a geoid separation read off a raw GNSS fix | the fix's own, on Android 14+ |
+| `priority` | honoured | ignored — this provider has one mode |
+| needs Play services | yes | no |
+
+The altitude row is the reason this is a setting. Fused states a vertical accuracy several times
+better than raw GNSS and is right to, but its altitude is a step function: at `intervalMs: 1000` about
+four points in five carry a copy of the previous one, which draws an elevation profile in flat treads
+and sharp risers and inflates any climb total computed from it. `gps` gives a continuous per-point
+altitude that is noisier by metres. Neither is the correct answer for everybody, which is why the
+choice is here rather than baked in.
+
+Switching `source` on a running recording is applied live like any other key — the recorder releases
+one subscription and opens the other without ending the recording or starting a new `seg`. An
+unrecognised value leaves the previous source alone, exactly as `priority` does, so a page may offer a
+source a given recorder has never heard of and read back what it actually got.
 
 These are enforced on **this** side rather than left to the client, because filtering in the browser
 still burns the battery and still fills the database, and because every other client would then see a

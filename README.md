@@ -9,7 +9,8 @@ setup checklist. Track management and upload come later.
 ## Requirements
 
 - Android 8.0 (API 26) or newer
-- Google Play services (uses `FusedLocationProviderClient`)
+- Google Play services, for the default `source: fused`. `source: gps` uses the platform's own
+  provider and needs none.
 
 ## Build
 
@@ -76,13 +77,39 @@ with it the reason for the second state: a stop and a start release and re-acqui
 pause and a resume did, open a new `seg` the same way, and are now just as reliable from a page in the
 background. What is gone is the notification saying *paused* rather than disappearing.
 
-`RecordingConfig` — the cadence, the displacement gate, the accuracy floor and the priority — is set
-over the API and persisted, so the app's own Start button records with whatever the website last asked
-for. It is applied by re-subscribing rather than by restarting anything, which is why `POST /start`
-against a running recording can stay idempotent instead of having to refuse a config it disagrees with.
-Everything it can express is enforced here rather than in whatever page is watching: a fix filtered out
-on this side is one that never costs battery to keep or disk to store, and every client then sees the
-same track.
+`RecordingConfig` — the cadence, the displacement gate, the accuracy floor, the source and the
+priority — is set over the API and persisted, so the app's own Start button records with whatever the
+website last asked for. It is applied by re-subscribing rather than by restarting anything, which is
+why `POST /start` against a running recording can stay idempotent instead of having to refuse a config
+it disagrees with. Everything it can express is enforced here rather than in whatever page is watching:
+a fix filtered out on this side is one that never costs battery to keep or disk to store, and every
+client then sees the same track.
+
+### Two sources, because fusion trades a shape for an accuracy
+
+`source` chooses between Play services' `FusedLocationProviderClient` and the platform's `gps`
+provider, and the reason it is a setting rather than a decision is the altitude.
+
+Fused is the better position — GNSS blended with wifi, cell and the phone's own sensors — and it
+states the better vertical accuracy too, some 2 m against the receiver's own 5 m and up. But it does
+not *measure* that altitude per fix. On a Xiaomi at `intervalMs: 1000`, sitting still, the fused
+altitude took four distinct values across 110 fixes, held each for 5 to 18 seconds, and inflated the
+`altAcc` it reported by exactly 0.01 m per second while it held — a dead-reckoned figure announcing its
+own staleness. 86 of those 110 points carried an altitude copied from the previous one. `dumpsys
+location` says where it comes from: the fused altitude is the *network* provider's to the decimal
+(Google's barometer-and-terrain service), while the `gps` provider alongside it reported something 8 m
+different with a 30 m error bar.
+
+That is invisible in a position but not in a profile. Four points in five carrying a copy draws an
+elevation chart as flat treads and sharp risers, and any climb total computed from it is wrong in both
+directions — the noise adds phantom metres, the holding swallows real ones. The raw provider recomputes
+altitude every epoch: continuous, several metres noisier, and each fix carries its own `mslAlt` instead
+of one reconstructed from a separation.
+
+So the recorder offers both and records which one produced each point in `src`. `priority` is a fused
+concept and is ignored at `source: gps`, though it is still stored, since it is what a switch back
+will use. Switching sources mid-recording releases one subscription and opens the other; the recording
+and its `seg` carry on, because a source is a term of the config like any other.
 
 `GnssMonitor` picks up what the fused client drops: the satellite count, and the geoid separation that
 turns an ellipsoidal altitude into one above mean sea level. Neither survives the trip through Play

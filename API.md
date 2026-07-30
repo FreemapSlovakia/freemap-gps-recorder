@@ -22,8 +22,6 @@ foreground service keeps that process alive with the screen off for as long as a
 | [`GET /stream`](#get-stream) | Server-Sent Events tail, one event per fix |
 | [`POST /start`](#post-start) | start recording, optionally on terms of your own |
 | [`POST /stop`](#post-stop) | stop recording |
-| [`POST /pause`](#post-pause) | stop consuming fixes, keep the session |
-| [`POST /resume`](#post-resume) | consume fixes again, in a new segment |
 
 Every response is `application/json` except `/stream`, which is `text/event-stream`.
 
@@ -32,9 +30,9 @@ Every response is `application/json` except `/stream`, which is `text/event-stre
 Takes no parameters. Always answers `200` with the status object:
 
 ```json
-{"recording":false,"paused":false,"lastSeq":1919,"count":1919,"generation":0,
+{"recording":false,"lastSeq":1919,"count":1919,"generation":0,
  "fields":["seq","ts","lat","lon","alt","acc","spd","brg","altMsl","altAcc","spdAcc","brgAcc","sat","src","seg"],
- "version":{"code":7,"name":"0.7"},
+ "version":{"code":8,"name":"0.8"},
  "port":8378,"portEcho":null,
  "permissions":{"fine":true,"background":true,"notifications":true},
  "batteryExempt":true,
@@ -45,24 +43,23 @@ Takes no parameters. Always answers `200` with the status object:
 
 | field | |
 | --- | --- |
-| `recording` | whether a recording is in progress right now. Stays `true` while paused — see [`POST /pause`](#post-pause) |
-| `paused` | a running recording that is not consuming fixes. Always `false` when `recording` is `false` |
+| `recording` | whether a recording is in progress right now |
 | `lastSeq` | highest `seq` currently stored, or `0` when the track is empty. Poll `/track?since=` with this |
 | `count` | how many points are stored |
 | `generation` | how many times the track has been cleared — see [`DELETE /track`](#delete-track) |
 | `fields` | the point column names, in order — the same list [`GET /track`](#get-track) returns |
 | `version.code` | `versionCode` of the installed recorder. Compare against what your page needs |
-| `version.name` | human-readable version, e.g. `"0.7"` |
+| `version.name` | human-readable version, e.g. `"0.8"` |
 | `port` | the port this recorder is listening on, always `8378` |
 | `portEcho` | the `port` from the last `freemap-gps-recorder://` link, or `null` — see [Launching from the web](README.md#launching-from-the-web) |
 | `permissions.fine` | `ACCESS_FINE_LOCATION` granted |
 | `permissions.background` | `ACCESS_BACKGROUND_LOCATION` granted |
 | `permissions.notifications` | `POST_NOTIFICATIONS` granted |
-| `batteryExempt` | app is exempt from battery optimisation |
+| `batteryExempt` | app is exempt from battery optimisation. Required to record — see `canRecord` |
 | `oem.vendor` | `"xiaomi"`, `"huawei"`, `"samsung"`, `"oppo"`, `"vivo"`, `"oneplus"`, or `null` |
 | `oem.needed` | this manufacturer needs a per-app battery setting changed by hand |
 | `oem.acknowledged` | the user has said they did it — nothing on the platform can verify this |
-| `canRecord` | the hard gate: `permissions.fine && permissions.notifications`. `POST /start` fails without it |
+| `canRecord` | the hard gate: `permissions.fine && permissions.notifications && batteryExempt`. `POST /start` fails without it |
 | `setupComplete` | everything above resolved, including the items that only make a *long* recording survive |
 | `config.intervalMs` | desired interval between fixes |
 | `config.minDistanceM` | minimum displacement before a fix is recorded |
@@ -70,8 +67,15 @@ Takes no parameters. Always answers `200` with the status object:
 | `config.priority` | `"high"`, `"balanced"` or `"low"` |
 | `error` | present only on a failed `/start` or `DELETE /track` — see those endpoints |
 
-`canRecord` is what to check before offering a start button. `setupComplete` being false is not an
-error: recording works without those items, it is just liable to be killed after a while.
+`canRecord` is what to check before offering a start button, and it is a promise rather than a guess:
+the battery exemption is one of its terms precisely because a start from a page is a *background*
+foreground-service start, which Android 12+ refuses without it. So `canRecord` being true means
+[`POST /start`](#post-start) will work from a page that is not in front, and not merely that the
+permissions are in place.
+
+`setupComplete` being false is not an error: it covers `permissions.background` and the OEM item,
+which only make a *long* recording survive. Recording works without them; it is just liable to be
+killed after a while.
 
 `fields` is here for the client that attaches to [`GET /stream`](#get-stream) without reading a
 `/track` page first — a reconnecting `EventSource`, or one whose cursor is already current. The stream
@@ -85,7 +89,7 @@ next one will use, after clamping to what the platform allows. Send values with
 request was clamped. The presence of `config` at all is the feature detection: a recorder that returns
 none ignored the body you sent it, and there is no separate capability flag or version gate to check.
 
-The same status object is the body of every `/start`, `/stop`, `/pause`, `/resume` and `DELETE /track`
+The same status object is the body of every `/start`, `/stop` and `DELETE /track`
 response, so one request tells you both what happened and where things now stand. It is also what the
 `status` event on [`GET /stream`](#get-stream) carries, which is how a connected client keeps up without
 polling this endpoint at all.
@@ -149,9 +153,8 @@ reported recently enough to speak for the fix in hand — which is the honest an
 from the network, or one taken while the receiver was duty-cycled off between widely spaced fixes.
 
 **`seg` marks the breaks**, so a client drawing the points does not join them with a straight line
-across a lunch break or a drive home with the recorder off. It increments on every start and on every
-resume, and — because a `START_STICKY` restart after a process kill is a real break too — it survives
-the process. It is an ordinal rather than a first-fix-of-a-session flag so that a client fetching a
+across a lunch break or a drive home with the recorder off. It increments on every start, and —
+because a `START_STICKY` restart after a process kill is a real break too — it survives the process. It is an ordinal rather than a first-fix-of-a-session flag so that a client fetching a
 mid-track page with `?since=` knows which segment it is in without having to hold the point before it.
 Like `seq` it does not restart within a generation, and it does not restart after a clear either; it is
 only promised to be monotonic and to change exactly at the breaks. It maps directly onto `<trkseg>`.
@@ -172,10 +175,6 @@ Throws every recorded point away, and returns the [status object](#get-status).
 [`POST /stop`](#post-stop) first. The refusal is deliberate: the recording thread is appending as the
 request runs, and a client tailing `/stream` would otherwise go on being handed points belonging to a
 track it has been told no longer exists.
-
-That includes a **paused** recording, where nothing is being appended right now: the session is still
-live, so a resume would go on adding to a track the caller was told had been thrown away. Stopping is
-what ends a session, and it is what has to happen before a clear.
 
 On success `count` becomes `0`, `lastSeq` becomes `0`, and **`generation` increases by one**. A
 [`status` event](#the-status-event) carrying the new `generation` goes out to every open `/stream`, so a
@@ -199,7 +198,7 @@ type `text/event-stream`, sent unbuffered and uncompressed.
 retry: 3000
 
 event: status
-data: {"recording":true,"paused":false,"lastSeq":550,…,"fields":["seq","ts",…,"seg"],…}
+data: {"recording":true,"lastSeq":550,…,"fields":["seq","ts",…,"seg"],…}
 
 id: 551
 data: [551,1785174196371,48.7062102,21.2367301,279.4,1.9,0.4,183.0,237.3,2.4,0.3,12.0,9,"fused",3]
@@ -217,7 +216,7 @@ handles just `message` ignores these and behaves exactly as it did before they e
 
 One arrives **on connect**, before any point, so a client that never calls `/status` still knows what it
 has joined — and, since the object names the point columns in `fields`, how to decode the rows that
-follow. After that, one arrives whenever the status **changes**: on start, stop, pause, resume, and on
+follow. After that, one arrives whenever the status **changes**: on start, on stop, and on
 [`DELETE /track`](#delete-track). A permission being granted or revoked, the battery exemption changing
 or the OEM item being acknowledged is noticed the next time the app's own screen is resumed, which is
 the only moment the platform gives it to notice — those are set in Settings, with nothing to call back.
@@ -265,7 +264,15 @@ Starts recording. Returns the [status object](#get-status).
 | `200` | recording. Already recording is also `200` — the call is idempotent |
 | `400` | `"error":"bad config"`. The body was not JSON, or a value was not a number |
 | `403` | `"error":"setup incomplete"`. `canRecord` is false; the missing item is in the same body |
-| `409` | the platform refused the start. `error` carries the exception class name |
+| `409` | the platform refused the start anyway. `error` carries the exception class name |
+
+**The battery-optimisation exemption is required**, and this endpoint is the reason: it is answered
+from the app process while the browser is in front, so the start it makes is a *background*
+foreground-service start, which Android 12+ refuses without the exemption. Rather than let that
+surface as a `409` after a page has been told it may record, `batteryExempt` is one of `canRecord`'s
+terms — so a recorder that is not exempt answers `403 setup incomplete` up front, naming the item to
+resolve. The user resolves it once, in the app's own checklist, and every later start from the page
+works.
 
 #### The recording config
 
@@ -308,14 +315,13 @@ chosen on the web.
 
 **A start against a recording that is already running is still `200`, and still idempotent.** Every one
 of these values can be changed without interrupting the session, so the new config is applied live to
-the running recording and reported back in `config` rather than being refused with a `409`. A start
-against a *paused* recording resumes it, since a start is a request for a recording that is running.
+the running recording and reported back in `config` rather than being refused with a `409`.
 
-The `409` is nearly always `ForegroundServiceStartNotAllowedException`: Android 12+ refuses to let a
-backgrounded app start a foreground service unless it is exempt from battery optimisation, which is
-what `batteryExempt` reports. If a page needs to start a recording while the app is not in front, the
-`freemap-gps-recorder://` link route in the [README](README.md#launching-from-the-web) is the reliable one
-— it brings the app forward first.
+The `409` is a safety net rather than a path a page should expect to walk. It carries whatever the
+platform threw — nearly always `ForegroundServiceStartNotAllowedException`, whose one cause is the
+missing exemption that the `403` above already turns away. If it does arrive, the
+`freemap-gps-recorder://` link route in the [README](README.md#launching-from-the-web) is the fallback: it
+brings the app forward first, so there is no background start to refuse.
 
 The response is not sent until the service has actually settled into the state that was asked for (up
 to 3 seconds) — recording, and running with this config — so the body is the real state and not a
@@ -329,35 +335,10 @@ nothing is recording is a no-op, not an error. The recorded track is kept — us
 
 As with `/start`, the response waits for the service to settle.
 
-### POST /pause
-
-Stops consuming fixes and keeps everything else: the session, the foreground service, the notification
-and the track. Takes no body. Always `200` with the [status object](#get-status); pausing when nothing
-is recording, or what is already paused, is a no-op rather than an error.
-
-**`recording` stays `true` while paused** — the session is live and the service is up — and `paused` is
-the finer state. A transport button drives off both: `!recording` is stopped, `recording && paused` is
-paused, `recording && !paused` is running.
-
-This is not the same as a `POST /stop` and a later `POST /start`, which is the only way a page had to
-fake it before. That pair churns the foreground-service notification, and on Android 12+ the restart
-can be refused outright with `ForegroundServiceStartNotAllowedException` when the page is in the
-background — turning a pause into a failed recording. Pausing touches none of that.
-
-The GNSS subscription and the wake lock both go while paused, because a pause that went on driving the
-receiver at full rate would save nothing on the break it exists for. The cost is that
-[`POST /resume`](#post-resume) re-acquires, so the first fixes after a resume are the poor ones — which
-is exactly what the [`seg`](#get-track) break in the track is there to mark. The recorder's notification
-says *Recording paused* and offers **Resume**, rather than looking identical to a running recording.
-
-### POST /resume
-
-Consumes fixes again, in a **new segment**: the next point recorded carries a `seg` one higher than the
-last, so a client drawing the track does not join a straight line across the break. Takes no body.
-Always `200` with the [status object](#get-status); resuming what is not paused is a no-op.
-
-[`POST /start`](#post-start) also resumes a paused recording, and additionally applies any config in its
-body. Use `/resume` when that is all you mean.
+**There is no pause.** A break in a recording is a `/stop` and a later `/start`. That costs nothing a
+pause would have saved — the fixes stop, the GNSS subscription and the wake lock go, and the next start
+opens a new [`seg`](#get-track), exactly as a pause and a resume did — and it is reliable from a
+backgrounded page now that `canRecord` requires the battery exemption.
 
 ## CORS
 
@@ -410,7 +391,7 @@ already running on your phone with the INTERNET permission has better ways to tr
 | `403` | `{"recording":…,"error":"setup incomplete"}` | `POST /start` without `canRecord` |
 | `404` | `{"error":"no such endpoint"}` | unknown path |
 | `405` | `{"error":"method not allowed"}` | known path, wrong method |
-| `409` | the status object with an `error` | start refused by the platform, or clear while recording |
+| `409` | the status object with an `error` | start refused by the platform anyway, or clear while recording |
 | `500` | `{"error":"internal"}` | a bug. Logged with a stack trace under tag `RecorderApi` |
 
 `400`, `403` and `409` carry the whole status object, not just the error, so a page can say what is
@@ -427,8 +408,6 @@ curl 'http://127.0.0.1:8378/track?since=0'
 curl -N http://127.0.0.1:8378/stream
 curl -X POST http://127.0.0.1:8378/start
 curl -X POST http://127.0.0.1:8378/stop
-curl -X POST http://127.0.0.1:8378/pause
-curl -X POST http://127.0.0.1:8378/resume
 curl -X DELETE http://127.0.0.1:8378/track
 ```
 

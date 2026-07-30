@@ -150,11 +150,11 @@ class PointStore private constructor(context: Context) : SQLiteOpenHelper(
      */
     fun generation(): Long = prefs.getLong(KEY_GENERATION, 0L)
 
-    /** The segment the last start or resume opened — what a fix recorded right now belongs to. */
+    /** The segment the last start opened — what a fix recorded right now belongs to. */
     fun segment(): Long = prefs.getLong(KEY_SEGMENT, 0L)
 
     /**
-     * Opens the next segment and returns its ordinal. Called on every start and every resume, so a
+     * Opens the next segment and returns its ordinal. Called on every start, so a
      * point whose `seg` differs from its predecessor's is the first of a new segment — which is what
      * a client needs in order not to draw a straight line across a lunch break.
      *

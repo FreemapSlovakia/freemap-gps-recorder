@@ -8,14 +8,6 @@ object RecorderState {
     @Volatile
     var recording: Boolean = false
 
-    /**
-     * Whether a running recording is consuming fixes. The session is still open and the foreground
-     * service is still up while this is true, which is why [recording] stays true alongside it —
-     * `paused` is the finer state, not a different one.
-     */
-    @Volatile
-    var paused: Boolean = false
-
     @Volatile
     var pointCount: Long = 0
 

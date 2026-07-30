@@ -36,11 +36,26 @@ object Setup {
     }
 
     /**
-     * The hard gate on Start. Without location there is nothing to record, and without the
-     * notification permission the recording would run with no visible sign of it — which is
-     * precisely what a foreground service is supposed to prevent.
+     * What a recording needs in order to happen at all. Without location there is nothing to record,
+     * and without the notification permission the recording would run with no visible sign of it —
+     * which is precisely what a foreground service is supposed to prevent.
      */
-    fun canRecord(context: Context) = fine(context) && notifications(context)
+    fun canKeepRecording(context: Context) = fine(context) && notifications(context)
+
+    /**
+     * The hard gate on starting: everything [canKeepRecording] needs, plus the battery exemption.
+     *
+     * The exemption is here for a different reason from the other two. `RecorderApi` answers
+     * `POST /start` from the app process while the browser is in front, and Android 12+ refuses a
+     * backgrounded app's `startForegroundService` unless it is exempt — so without this term the
+     * website could be told it may record and then be refused, which is worse than being told to
+     * finish the setup first.
+     *
+     * It is deliberately *not* part of [canKeepRecording]: a recording already in progress does not
+     * stop needing to be recorded because the user has since turned the exemption off, and tearing a
+     * live track down over it would lose the track.
+     */
+    fun canRecord(context: Context) = canKeepRecording(context) && batteryExempt(context)
 
     /**
      * Everything resolved, including the items that only make recording *reliable*. Recording is
@@ -49,7 +64,6 @@ object Setup {
     fun complete(context: Context) =
         canRecord(context) &&
             background(context) &&
-            batteryExempt(context) &&
             (Vendor.current == null || oemAcknowledged(context))
 
     private fun granted(context: Context, permission: String) =

@@ -60,8 +60,6 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
             "/status" -> if (method == Method.GET) json(Response.Status.OK, statusJson()) else notAllowed()
             "/start" -> if (method == Method.POST) startRecording(body) else notAllowed()
             "/stop" -> if (method == Method.POST) stopRecording() else notAllowed()
-            "/pause" -> if (method == Method.POST) pauseRecording() else notAllowed()
-            "/resume" -> if (method == Method.POST) resumeRecording() else notAllowed()
             else -> json(Response.Status.NOT_FOUND, """{"error":"no such endpoint"}""")
         }
     }
@@ -125,12 +123,13 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
      *
      * A start against a recording that is already running is still idempotent: the config is applied
      * live and the effective one comes back in the response, which is how a client learns what it
-     * actually got without a second request. A paused recording is resumed, since a start is a
-     * request for a running recording.
+     * actually got without a second request.
      */
     private fun startRecording(body: String?): Response {
-        // Same gate as the Start button: no location means nothing to record, and no notification
-        // permission means a recording nobody can see is running. `canRecord` in the body says so.
+        // Same gate as the Start button: no location means nothing to record, no notification
+        // permission means a recording nobody can see is running, and without the battery exemption
+        // the foreground-service start below is refused outright — this endpoint is answered from the
+        // background, with the browser in front. `canRecord` in the body says so.
         if (!Setup.canRecord(app)) {
             return json(Response.Status.FORBIDDEN, statusJson("setup incomplete"))
         }
@@ -148,18 +147,19 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
 
         if (RecorderState.recording) {
             RecordingService.reconfigure(app)
-            // The service owns the config of a running recording, so wait for it to have adopted this
-            // one — and to have resumed, if it was paused. Then the response says what is actually
-            // running rather than what was asked for.
-            await { RecorderState.config == config && !RecorderState.paused }
+            // The service owns the config of a running recording, so wait for it to have adopted
+            // this one. Then the response says what is actually running rather than what was asked
+            // for.
+            await { RecorderState.config == config }
             return json(Response.Status.OK, statusJson())
         }
 
         try {
             RecordingService.start(app)
         } catch (e: Exception) {
-            // Android 12+ refuses a background foreground-service start unless the app is
-            // exempt from battery optimisation — which is what batteryExempt reports.
+            // A safety net rather than the expected path: the one thing Android 12+ refuses a
+            // background foreground-service start for is the missing battery exemption, and
+            // `canRecord` above has already turned that away with a 403.
             Log.w(TAG, "could not start recording", e)
             return json(Response.Status.CONFLICT, statusJson(e.javaClass.simpleName))
         }
@@ -171,27 +171,6 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
         if (RecorderState.recording) {
             RecordingService.stop(app)
             await { !RecorderState.recording }
-        }
-        return json(Response.Status.OK, statusJson())
-    }
-
-    /**
-     * Stops consuming fixes and keeps the session: no foreground-service restart, no re-acquisition
-     * of a notification, and nothing for Android 12+ to refuse — which is what a page faking a pause
-     * with a stop and a later start is exposed to.
-     */
-    private fun pauseRecording(): Response {
-        if (RecorderState.recording && !RecorderState.paused) {
-            RecordingService.pause(app)
-            await { RecorderState.paused }
-        }
-        return json(Response.Status.OK, statusJson())
-    }
-
-    private fun resumeRecording(): Response {
-        if (RecorderState.recording && RecorderState.paused) {
-            RecordingService.resume(app)
-            await { !RecorderState.paused }
         }
         return json(Response.Status.OK, statusJson())
     }
@@ -221,7 +200,6 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
         val config = if (RecorderState.recording) RecorderState.config else RecordingConfig.load(app)
         val sb = StringBuilder(420)
         sb.append("{\"recording\":").append(RecorderState.recording)
-        sb.append(",\"paused\":").append(RecorderState.paused)
         sb.append(",\"lastSeq\":").append(store.maxSeq())
         sb.append(",\"count\":").append(store.count())
         sb.append(",\"generation\":").append(store.generation())
@@ -387,7 +365,7 @@ class RecorderApi private constructor(context: Context) : NanoHTTPD(HOST, PORT) 
 
         /**
          * Pushes the current status to every open `/stream`, so a connected client does not have to
-         * poll `/status` to notice a stop, a pause, a resume or a cleared track.
+         * poll `/status` to notice a start, a stop or a cleared track.
          *
          * Safe to call at anything that might have changed it: [RecorderBus.publishStatus] drops a
          * snapshot identical to the last one, so a status event always means the status is genuinely

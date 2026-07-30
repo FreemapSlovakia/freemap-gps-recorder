@@ -3,18 +3,14 @@
     <string name="app_name">Freemap GPS Recorder</string>
 
     <string name="state_recording">Recording</string>
-    <string name="state_paused">Paused</string>
     <string name="state_idle">Not recording</string>
     <string name="points_fmt">%1$d points</string>
 
     <string name="start">Start</string>
     <string name="stop">Stop</string>
-    <string name="pause">Pause</string>
-    <string name="resume">Resume</string>
 
     <string name="notif_channel">Track recording</string>
     <string name="notif_title">Recording track</string>
-    <string name="notif_title_paused">Recording paused</string>
     <string name="notif_text">%1$d points</string>
 
     <!-- Setup checklist -->
@@ -41,7 +37,7 @@
     <string name="item_notifications_detail">Required — the recording has to be visible while it runs.</string>
 
     <string name="item_battery">Unrestricted battery use</string>
-    <string name="item_battery_detail">Keeps Android from putting the recorder to sleep.</string>
+    <string name="item_battery_detail">Required — keeps Android from putting the recorder to sleep, and is what lets freemap.sk start a recording.</string>
 
     <string name="item_oem">%1$s app restrictions</string>
     <string name="item_oem_detail">%1$s restricts background apps beyond Android\'s own rules, and a long recording may not survive its defaults.</string>
@@ -56,7 +52,7 @@
     <string name="background_msg">Android will not offer this in a prompt, so it has to be set by hand.\n\nOn the next screen open Permissions → Location and choose \"Allow all the time\".</string>
 
     <string name="battery_title">Unrestricted battery use</string>
-    <string name="battery_msg">Android puts apps to sleep to save power. A sleeping recorder records nothing, and it is not told to stop — the track simply ends where the phone decided it should, usually with no warning at all.\n\nAllowing unrestricted battery use is what keeps a long recording intact.</string>
+    <string name="battery_msg">Android puts apps to sleep to save power. A sleeping recorder records nothing, and it is not told to stop — the track simply ends where the phone decided it should, usually with no warning at all.\n\nAllowing unrestricted battery use is what keeps a long recording intact. It is also what lets freemap.sk start a recording while you are looking at the website, so recording cannot begin without it.</string>
 
     <string name="oem_open">Open settings</string>
     <string name="oem_done">I\'ve done this</string>

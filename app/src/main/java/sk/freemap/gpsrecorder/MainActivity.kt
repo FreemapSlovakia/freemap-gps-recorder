@@ -36,7 +36,6 @@ class MainActivity : Activity() {
     private lateinit var stateView: TextView
     private lateinit var countView: TextView
     private lateinit var toggle: Button
-    private lateinit var pause: Button
     private lateinit var warning: TextView
     private lateinit var setupHeading: TextView
     private lateinit var setupList: LinearLayout
@@ -73,7 +72,6 @@ class MainActivity : Activity() {
         stateView = findViewById(R.id.state)
         countView = findViewById(R.id.count)
         toggle = findViewById(R.id.toggle)
-        pause = findViewById(R.id.pause)
         warning = findViewById(R.id.warning)
         setupHeading = findViewById(R.id.setup_heading)
         setupList = findViewById(R.id.setup)
@@ -83,10 +81,6 @@ class MainActivity : Activity() {
             // e.g. from a link whose setup the user abandoned earlier and only finished now.
             returnAfterStart = false
             if (RecorderState.recording) RecordingService.stop(this) else startRecording()
-        }
-
-        pause.setOnClickListener {
-            if (RecorderState.paused) RecordingService.resume(this) else RecordingService.pause(this)
         }
 
         buildSetupRows()
@@ -201,21 +195,11 @@ class MainActivity : Activity() {
 
     private fun render() {
         val recording = RecorderState.recording
-        val paused = RecorderState.paused
-        stateView.setText(
-            when {
-                !recording -> R.string.state_idle
-                paused -> R.string.state_paused
-                else -> R.string.state_recording
-            }
-        )
+        stateView.setText(if (recording) R.string.state_recording else R.string.state_idle)
         countView.text = getString(R.string.points_fmt, RecorderState.pointCount)
         toggle.setText(if (recording) R.string.stop else R.string.start)
         // Stopping must always be possible, even if a permission was revoked mid-recording.
         toggle.isEnabled = recording || canRecord
-        pause.setText(if (paused) R.string.resume else R.string.pause)
-        // Pausing means nothing without a session to keep, so the button is only there during one.
-        pause.visibility = if (recording) View.VISIBLE else View.INVISIBLE
     }
 
     // --- setup checklist ---------------------------------------------------------------------
@@ -233,7 +217,10 @@ class MainActivity : Activity() {
             R.string.item_notifications, R.string.item_notifications_detail, R.string.act_grant, true,
         ),
 
-        BATTERY(R.string.item_battery, R.string.item_battery_detail, R.string.act_allow, false),
+        // Required, and not only for the reason the label gives: without the exemption Android 12+
+        // refuses the foreground-service start that `POST /start` makes from the background, so a
+        // recording asked for by the website could not begin at all.
+        BATTERY(R.string.item_battery, R.string.item_battery_detail, R.string.act_allow, true),
 
         OEM(R.string.item_oem, R.string.item_oem_detail, R.string.act_how, false),
 
@@ -469,8 +456,9 @@ class MainActivity : Activity() {
      * `freemap-gps-recorder://start` starts recording and hands focus straight back to the browser;
      * any other authority just opens the app. An optional `?port=` is echoed by `GET /status`.
      *
-     * A link makes the app foreground, so the foreground-service start is always permitted here —
-     * unlike `POST /start`, which needs the battery-optimisation exemption.
+     * A link makes the app foreground, so the foreground-service start itself is always permitted
+     * here. It still goes through the same [Setup.canRecord] gate as `POST /start`, so the one visit
+     * that resolves the checklist is what makes every later start from the web work too.
      */
     private fun handleLink(intent: Intent?) {
         val uri = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.data ?: return

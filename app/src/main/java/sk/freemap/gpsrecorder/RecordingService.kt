@@ -28,13 +28,12 @@ import com.google.android.gms.location.LocationServices
  * [PointStore].
  *
  * Fixes are delivered onto a dedicated [HandlerThread] so the SQLite writes never touch the main
- * thread, and a partial wake lock is held while fixes are being consumed so writes keep landing with
- * the screen off.
+ * thread, and a partial wake lock is held while a recording runs so writes keep landing with the
+ * screen off.
  *
- * Two states, not one. *Tracking* is the session: the service is up, the notification is showing and
- * the track is open. *Consuming* is whether fixes are being taken. A pause drops the second and
- * keeps the first, so the session survives a break without a foreground-service restart — which on
- * Android 12+ is the thing most likely to turn a pause into a failed recording.
+ * One state, not two: the service is either tracking or it is gone. Stopping and starting again is
+ * what a break in a recording is, and it costs nothing a pause would have saved — the exemption
+ * `Setup.canRecord` now demands is what makes the restart reliable from the background.
  */
 class RecordingService : Service() {
 
@@ -45,13 +44,10 @@ class RecordingService : Service() {
     private var gnss: GnssMonitor? = null
 
     // Written here on the main thread, read by the location callback on the point-writer thread —
-    // which is why they are volatile: a pause that the callback did not see for a while would go on
-    // appending fixes, and a resume's new segment number has to be visible to the first fix after it.
+    // which is why they are volatile: a stop the callback did not see for a while would go on
+    // appending fixes, and a start's new segment number has to be visible to the first fix after it.
     @Volatile
     private var tracking = false
-
-    @Volatile
-    private var consuming = false
 
     @Volatile
     private var config = RecordingConfig()
@@ -63,8 +59,8 @@ class RecordingService : Service() {
 
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
-            // removeLocationUpdates is asynchronous, so a fix can still land after a stop or pause.
-            if (!consuming) return
+            // removeLocationUpdates is asynchronous, so a fix can still land after a stop.
+            if (!tracking) return
             val store = store ?: return
             var appended = false
             for (loc in result.locations) {
@@ -85,23 +81,10 @@ class RecordingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> {
-                stopTracking()
-                stopSelf()
-                return START_NOT_STICKY
-            }
-
-            ACTION_PAUSE -> {
-                // Pausing something that is not running is a no-op, but the service must not be left
-                // sitting here having been started for nothing.
-                if (!tracking) {
-                    stopSelf()
-                    return START_NOT_STICKY
-                }
-                pause()
-                return START_STICKY
-            }
+        if (intent?.action == ACTION_STOP) {
+            stopTracking()
+            stopSelf()
+            return START_NOT_STICKY
         }
 
         // Recording is impossible without location, and invisible without the notification. The
@@ -110,7 +93,11 @@ class RecordingService : Service() {
         // this is exactly where a revoke lands. Play services does not fail the subscription
         // synchronously, so without this check the service would sit in the notification claiming to
         // record while appending nothing.
-        if (!Setup.canRecord(this)) {
+        //
+        // The battery exemption that `Setup.canRecord` also demands is not checked here: it gates
+        // *starting* a recording from the background, and a recording that is already under way would
+        // only be lost by ending it over a setting the user changed while it ran.
+        if (!Setup.canKeepRecording(this)) {
             Log.w(TAG, "cannot record: location or notification permission missing, stopping")
             stopTracking()
             stopSelf()
@@ -118,19 +105,18 @@ class RecordingService : Service() {
         }
 
         when (intent?.action) {
-            // ACTION_RECONFIGURE is a start against a recording that is already running: adopt
-            // whatever config was stored, and make sure fixes are being consumed again.
-            ACTION_RESUME, ACTION_RECONFIGURE -> {
+            // A start against a recording that is already running: adopt whatever config was stored.
+            ACTION_RECONFIGURE -> {
                 // No session to act on: whoever sent this lost a race with a recording that was
                 // already ending, and the service must not be left sitting here for nothing.
                 if (!tracking) {
                     stopSelf()
                     return START_NOT_STICKY
                 }
-                if (intent?.action == ACTION_RESUME) resume() else startTracking()
+                startTracking()
             }
 
-            // A null intent means the system restarted us after a process kill — resume recording.
+            // A null intent means the system restarted us after a process kill — carry on recording.
             else -> startTracking()
         }
         return START_STICKY
@@ -154,16 +140,13 @@ class RecordingService : Service() {
                 config = wanted
                 RecorderState.config = wanted
                 Log.i(TAG, "config changed to $wanted")
-                if (consuming) subscribe()
+                subscribe()
             }
-            // A start asks for a running recording, so it is also how a paused one is resumed.
-            if (consuming) refreshNotification() else resume()
+            refreshNotification()
             return
         }
 
         tracking = true
-        // Before the notification is built, which is what reads it to decide what it says.
-        consuming = true
         config = wanted
         RecorderState.config = wanted
 
@@ -171,7 +154,6 @@ class RecordingService : Service() {
         RecorderState.pointCount = store.count()
         RecorderState.lastSeq = store.maxSeq()
         RecorderState.recording = true
-        RecorderState.paused = false
 
         startInForeground()
 
@@ -183,40 +165,10 @@ class RecordingService : Service() {
         RecorderApi.publishStatus()
     }
 
-    /**
-     * Stops consuming fixes while keeping the session, the service and the notification. The GNSS
-     * subscription and the wake lock both go, since a paused recording that went on driving the
-     * receiver at full rate would save nothing on the break it exists for — the cost is that
-     * [resume] re-acquires, and that is what the segment break in the track marks.
-     */
-    private fun pause() {
-        if (!consuming) return
-        consuming = false
-        RecorderState.paused = true
-        unsubscribe()
-        refreshNotification()
-        Log.i(TAG, "paused at ${RecorderState.pointCount} points")
-        RecorderApi.publishStatus()
-    }
-
-    /** Consumes fixes again, in a new segment: the break belongs in the track, not in a client's guess. */
-    private fun resume() {
-        if (consuming) return
-        consuming = true
-        RecorderState.paused = false
-        segment = store?.nextSegment() ?: segment
-        subscribe()
-        refreshNotification()
-        Log.i(TAG, "resumed into segment $segment")
-        RecorderApi.publishStatus()
-    }
-
     private fun stopTracking() {
         if (!tracking) return
         tracking = false
-        consuming = false
         RecorderState.recording = false
-        RecorderState.paused = false
 
         unsubscribe()
         gnss = null
@@ -301,13 +253,9 @@ class RecordingService : Service() {
             .notify(NOTIFICATION_ID, buildNotification())
     }
 
-    /**
-     * Says which of the two states this is in. A paused recording that looked identical to a running
-     * one would be the notification's one job left undone.
-     */
+    /** The recording made visible: what it is, how many points it has, and how to end it. */
     private fun buildNotification(): Notification {
         ensureChannel()
-        val paused = !consuming
 
         val open = PendingIntent.getActivity(
             this,
@@ -319,7 +267,7 @@ class RecordingService : Service() {
 
         val builder = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_track)
-            .setContentTitle(getString(if (paused) R.string.notif_title_paused else R.string.notif_title))
+            .setContentTitle(getString(R.string.notif_title))
             .setContentText(getString(R.string.notif_text, RecorderState.pointCount))
             .setContentIntent(open)
             .setCategory(Notification.CATEGORY_SERVICE)
@@ -327,32 +275,23 @@ class RecordingService : Service() {
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .addAction(
-                action(
-                    if (paused) R.string.resume else R.string.pause,
-                    if (paused) ACTION_RESUME else ACTION_PAUSE,
-                    if (paused) REQUEST_RESUME else REQUEST_PAUSE,
-                )
+                Notification.Action.Builder(
+                    Icon.createWithResource(this, R.drawable.ic_stat_track),
+                    getString(R.string.stop),
+                    PendingIntent.getService(
+                        this,
+                        REQUEST_STOP,
+                        Intent(this, RecordingService::class.java).setAction(ACTION_STOP),
+                        PendingIntent.FLAG_IMMUTABLE,
+                    ),
+                ).build()
             )
-            .addAction(action(R.string.stop, ACTION_STOP, REQUEST_STOP))
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
         }
         return builder.build()
     }
-
-    /** Distinct request codes, or an immutable PendingIntent would be reused for the wrong action. */
-    private fun action(label: Int, intentAction: String, requestCode: Int): Notification.Action =
-        Notification.Action.Builder(
-            Icon.createWithResource(this, R.drawable.ic_stat_track),
-            getString(label),
-            PendingIntent.getService(
-                this,
-                requestCode,
-                Intent(this, RecordingService::class.java).setAction(intentAction),
-                PendingIntent.FLAG_IMMUTABLE,
-            ),
-        ).build()
 
     private fun ensureChannel() {
         val manager = getSystemService(NotificationManager::class.java)
@@ -377,13 +316,10 @@ class RecordingService : Service() {
 
         private const val NOTIFICATION_REFRESH_MS = 3_000L
 
+        /** Distinct from the content intent's, or the immutable PendingIntents would collide. */
         private const val REQUEST_STOP = 1
-        private const val REQUEST_PAUSE = 2
-        private const val REQUEST_RESUME = 3
 
         const val ACTION_STOP = "sk.freemap.gpsrecorder.STOP"
-        const val ACTION_PAUSE = "sk.freemap.gpsrecorder.PAUSE"
-        const val ACTION_RESUME = "sk.freemap.gpsrecorder.RESUME"
         private const val ACTION_RECONFIGURE = "sk.freemap.gpsrecorder.RECONFIGURE"
 
         /** A cold start, and the one call here that needs the foreground-service start to be allowed. */
@@ -398,17 +334,13 @@ class RecordingService : Service() {
          */
         fun reconfigure(context: Context) = send(context, ACTION_RECONFIGURE)
 
-        fun pause(context: Context) = send(context, ACTION_PAUSE)
-
-        fun resume(context: Context) = send(context, ACTION_RESUME)
-
         fun stop(context: Context) = send(context, ACTION_STOP)
 
         /**
-         * Every one of these says "make the running service do this", so losing the race against a
-         * recording that was already ending is not a failure: there is nothing left to pause, resume,
-         * reconfigure or stop. Android would otherwise answer a background [Context.startService]
-         * with no service running by throwing, and the caller has nothing useful to do with that.
+         * Both of these say "make the running service do this", so losing the race against a
+         * recording that was already ending is not a failure: there is nothing left to reconfigure
+         * or stop. Android would otherwise answer a background [Context.startService] with no
+         * service running by throwing, and the caller has nothing useful to do with that.
          */
         private fun send(context: Context, action: String) {
             try {

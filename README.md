@@ -61,20 +61,20 @@ ever lost or compromised.
 ## How it works
 
 `RecordingService` is a foreground service with `foregroundServiceType="location"` and a persistent
-notification carrying **Pause**/**Resume** and **Stop** actions. It requests fixes on the terms
-`RecordingConfig` sets — 1 Hz at `PRIORITY_HIGH_ACCURACY` by default — and holds a partial wake lock
-while it is consuming them, because without it delivery becomes unreliable once the screen goes off.
+notification carrying a **Stop** action. It requests fixes on the terms `RecordingConfig` sets — 1 Hz
+at `PRIORITY_HIGH_ACCURACY` by default — and holds a partial wake lock while it runs, because without
+it delivery becomes unreliable once the screen goes off.
 
 Fixes are delivered onto a dedicated `HandlerThread`, so SQLite writes never touch the main thread.
 `PointStore` appends each one through a single reused compiled statement.
 
-The service has **two states, not one**, and the distinction is the whole of pause. *Tracking* is the
-session: the service is up, the notification is showing, the track is open. *Consuming* is whether
-fixes are being taken at all. A pause drops the second and keeps the first, so a break costs no
-foreground-service restart — which on Android 12+ is the single most likely way a resumed recording
-fails, since a backgrounded app is not allowed to start one. It also drops the GNSS subscription and
-the wake lock, because a pause that kept driving the receiver would save nothing on the break it
-exists for; the price is a re-acquisition on resume, and that break is what `seg` records.
+The service has **one state, not two**: it is tracking, or it is not there. It used to carry a second
+one for pause — a session kept open with fixes no longer being consumed — because a break taken as a
+stop and a later start could be refused outright on Android 12+, which turned a pause into a failed
+recording. Requiring the battery-optimisation exemption to record at all removes that failure, and
+with it the reason for the second state: a stop and a start release and re-acquire exactly what a
+pause and a resume did, open a new `seg` the same way, and are now just as reliable from a page in the
+background. What is gone is the notification saying *paused* rather than disappearing.
 
 `RecordingConfig` — the cadence, the displacement gate, the accuracy floor and the priority — is set
 over the API and persisted, so the app's own Start button records with whatever the website last asked
@@ -115,22 +115,33 @@ because most of them are granted in Settings — outside the app, with nothing t
 | Location access | prominent-disclosure screen, then the system prompt for fine + coarse | **yes** |
 | Background location | Android 11+ shows no prompt at all, so it is app settings → Permissions → Location → *Allow all the time* | no |
 | Notifications | system prompt on Android 13+; implicit before that | **yes** |
-| Unrestricted battery use | plain-language explanation, then `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | no |
+| Unrestricted battery use | plain-language explanation, then `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | **yes** |
 | Vendor app restrictions | vendor-specific guidance, plus a shortcut to that vendor's own screen | no |
 
-Start is blocked until location and notifications are granted — without the first there is nothing
-to record, and without the second a recording would run with no visible sign of it, which is the one
-thing a foreground service exists to prevent. `POST /start` refuses the same two with `403` and
-`"error":"setup incomplete"`.
+Start is blocked until location, notifications and the battery exemption are all in place — that is
+`Setup.canRecord`, and `POST /start` refuses the same three with `403` and
+`"error":"setup incomplete"`. The first two are what recording *is*: without location there is nothing
+to record, and without the notification a recording would run with no visible sign of it, which is the
+one thing a foreground service exists to prevent.
 
-`RecordingService` checks the same gate in `onStartCommand` and stops instead of starting. That is not
-a formality: revoking a permission kills the app process, `START_STICKY` has the system restart the
-service, and Play services does not fail the location subscription synchronously — so without the
-check the service comes back and sits in the notification claiming to record while appending nothing.
+The exemption is blocking for a different reason, and it is about the website rather than about
+battery. `RecorderApi` answers `POST /start` from the app process with the browser in front, so the
+`startForegroundService` it makes is a *background* start — and Android 12+ refuses one of those from
+an app that is not exempt. Leaving the exemption as a warning meant `canRecord` could be true and the
+start be refused anyway, one `409` later. Making it a term of `canRecord` moves that answer to before
+the page ever offers a start button, and names the item to resolve.
 
-The rest only make a recording *survive*, so they never block anything; while any of them is
-outstanding a banner says as much and the checklist stays on screen. Once everything is resolved
-both disappear and the screen is just state, count and button again.
+`RecordingService` checks `Setup.canKeepRecording` in `onStartCommand` — the two permissions, not the
+exemption — and stops instead of starting. That is not a formality: revoking a permission kills the app
+process, `START_STICKY` has the system restart the service, and Play services does not fail the
+location subscription synchronously, so without the check the service comes back and sits in the
+notification claiming to record while appending nothing. The exemption is deliberately outside that
+gate: it decides whether a recording may *begin* from the background, and a recording already under way
+would only be lost by ending it over a setting the user changed while it ran.
+
+Background location and the vendor item only make a recording *survive*, so they never block anything;
+while either is outstanding a banner says as much and the checklist stays on screen. Once everything is
+resolved both disappear and the screen is just state, count and button again.
 
 The order in the table is the order the items can be asked in: Android silently drops a
 background-location request that is bundled with, or precedes, the foreground one, so the background
@@ -187,7 +198,7 @@ that a clear happened at all.
 
 The stream carries a named `status` event as well as points, and `/status` names the point columns in
 `fields`. Both exist for one reason: a client should not have to *infer* something the recorder knows.
-Without the status event a connected client polls to notice a stop or a pause, which leaves its panel
+Without the status event a connected client polls to notice a stop, which leaves its panel
 stale by the poll interval — read as a bug rather than as an interval — and a frozen background tab runs
 no timer at all. Without `fields`, a client that attaches to the stream without reading a `/track` page
 first must fall back on a hardcoded column list, which stays correct only while the names it knows remain
@@ -200,7 +211,7 @@ receiving one means something genuinely changed, and a client can act on it rath
 
 `seg` exists because the recorder is the only party that actually knows where the breaks are. A client
 can guess from a gap in `ts`, and it will be wrong at both ends — a tunnel looks like a break and a
-twenty-second pause looks like none — and every client would have to guess the same way. The ordinal is
+twenty-second one looks like none — and every client would have to guess the same way. The ordinal is
 kept in preferences rather than derived from the track, so the one break nothing else would notice is
 recorded too: a process kill and the `START_STICKY` restart that follows it.
 
@@ -232,10 +243,11 @@ instead of leaving them looking at the native UI. If the app is not able to reco
 with the [checklist](#setup) instead, opens the first thing standing in the way, and hands back the
 moment recording actually starts — which may be several prompts later.
 
-This is also the way to start recording that always works. `POST /start` needs the
-battery-optimisation exemption below, because it is a background start; a link makes the app
-foreground, so the foreground-service start is permitted with no exemption and no extra dialog —
-the exemption prompt is deliberately skipped on this path so nothing interrupts the hand-back.
+A link makes the app foreground, so the foreground-service start it makes is always permitted — the
+one thing `POST /start` cannot count on from the background, and why the exemption below is a
+requirement rather than a warning. The link still goes through the same `Setup.canRecord` gate, so with
+the exemption outstanding it opens that checklist row instead of starting; resolving it is a one-time
+visit that makes every later start, link or `POST /start`, work.
 
 An optional `?port=` is echoed back as `portEcho` in `GET /status`, alongside the authoritative
 `port`. Send the port you intend to talk to, then read `/status` on it: getting your own value back
@@ -254,11 +266,12 @@ so treat a `/status` that never answers as "not installed".
 
 ### Battery-optimisation exemption
 
-`POST /start` while the app is backgrounded needs the app to be exempt from battery optimisation —
-without it Android 12+ rejects the foreground-service start with
-`ForegroundServiceStartNotAllowedException`, which the endpoint reports as a `409` with the exception
-name in `error`. Declining the exemption costs only remote start, not recording, which is why it is
-a non-blocking [checklist](#setup) item; `/status` reports it as `batteryExempt`.
+`POST /start` is answered while the app is backgrounded, so it needs the app to be exempt from battery
+optimisation — without it Android 12+ rejects the foreground-service start with
+`ForegroundServiceStartNotAllowedException`. That is why the exemption is a **blocking**
+[checklist](#setup) item and one of `Setup.canRecord`'s terms: the alternative was telling a page it
+could record and then answering its start with a `409`, which is a worse way to learn the same fact.
+The `409` still exists as a safety net, and `/status` reports the exemption as `batteryExempt`.
 
 ## Distribution and updates
 
@@ -285,9 +298,17 @@ currently `https://download.freemap.sk/freemap-gps-recorder/latest.json`:
 **That file is generated, not hand-written.** `./gradlew releaseApk` writes it to
 `app/build/distributions/latest.json` from the same properties the APK is built from, so it cannot
 advertise a version that was never built. Publishing a release is: set `recorder.releaseNotes`, bump
-the version, run `./gradlew releaseApk`, then upload both files — the APK as
+the version, run `./gradlew clean releaseApk`, then upload both files — the APK as
 `freemap-gps-recorder.apk` and the manifest as `latest.json`. Upload the APK **first**, or a phone that
 checks in between will offer a download that 404s.
+
+Upload each file under a temporary name and rename it into place. The unversioned filename is live the
+moment it is writable, so a plain overwrite leaves a window in which a phone downloads a truncated
+APK — and the rename closes it for the cost of one extra command. Then read back what the *server*
+serves rather than what was uploaded: the manifest's `versionCode`, and the APK's SHA-256 against the
+local build. Check the signer first, too — an APK signed with a different key installs for nobody who
+already has this app, and `apksigner verify --print-certs` says so before the upload rather than after.
+[CLAUDE.md](CLAUDE.md#releasing) has the commands.
 
 | field | | from |
 | --- | --- | --- |
@@ -302,6 +323,11 @@ invisible behind a stale copy — the app only asks once a day as it is. And if 
 unversioned filename, that URL has to not be cached either, or the browser fetches the previous APK
 from cache and the user installs the version they already had. Serving the manifest with
 `Cache-Control: no-cache` and the APK with a short max-age avoids both.
+
+**Neither header is set on the server today** — as of 0.8 both files come back with only `ETag` and
+`Last-Modified`, so freshness is left to whatever the client decides to guess. Conditional requests do
+pick the new files up, and nothing has been observed going stale, but this is a server-config gap
+rather than something the build can fix.
 
 `versionCode` is compared against this build's own; anything higher is offered in a dismissable
 dialog with `notes` in it, and **Download** hands `apkUrl` to the browser. Nothing is downloaded and
@@ -361,7 +387,7 @@ One row per fix in `points`, in the app's private `track.db`:
 | `bearing_accuracy` | degrees, `NULL` when the fix has none |
 | `satellites` | used in the fix, `NULL` when GNSS has not reported recently enough to say |
 | `provider` | `gps`, `fused`, `network`, or `NULL` |
-| `segment` | ordinal, bumped on every start and resume. `0` on rows recorded before schema 2 |
+| `segment` | ordinal, bumped on every start. `0` on rows recorded before schema 2 |
 
 Optional fields are stored as `NULL` rather than `0` when the platform reports them as absent, so a
 stationary fix is not mistaken for one heading due north.
@@ -399,11 +425,12 @@ The HTTP API was verified on the same device, with the app backgrounded througho
 - with nothing recording, `: ping` heartbeats arrive every 15 s
 
 `freemap-gps-recorder://start` was verified on the same device with Firefox as the default browser, on a
-cold process and with the app already open, and with the battery-optimisation exemption *removed*:
-recording started in both cases and the browser was the resumed activity again within seconds, with
-no dialog in between. When the app was already open its task survived the hand-back; when the link
-had created the task, no activity was left behind. `?port=` came back as `portEcho`, and a
-mismatched port was logged rather than acted on.
+cold process and with the app already open: recording started in both cases and the browser was the
+resumed activity again within seconds, with no dialog in between. When the app was already open its
+task survived the hand-back; when the link had created the task, no activity was left behind. `?port=`
+came back as `portEcho`, and a mismatched port was logged rather than acted on. That run predates 0.8,
+which makes the battery exemption part of `canRecord` — a link fired without it now opens the battery
+row rather than starting, which is the 0.8 paragraph below.
 
 The setup checklist was walked end to end on an API 36 emulator, since MIUI refuses `INJECT_EVENTS`
 over adb and the phone cannot be driven by script:
@@ -422,8 +449,8 @@ over adb and the phone cannot be driven by script:
   revoked it keeps the app up and opens the first blocking item instead
 
 Revoking location mid-recording is what turned up the zombie-service case above: the service came
-back with `recording:true` and `lastSeq` frozen. With the gate in `onStartCommand` the restart logs
-`cannot record: location or notification permission missing, stopping` and leaves no service record,
+back with `recording:true` and `lastSeq` frozen. With the `canKeepRecording` gate in `onStartCommand`
+the restart logs `cannot record: location or notification permission missing, stopping` and leaves no service record,
 and no `ForegroundServiceDidNotStartInTimeException` for stopping before going foreground.
 
 On the phone, vendor detection reports `"oem":{"vendor":"xiaomi","needed":true}`, and setting the
@@ -498,14 +525,6 @@ confirmed `user_version` 1 with the original eight columns. Installing 0.6 over 
 under the new fifteen-field header with `null` in every added column and `seg` `0` — not a fabricated
 value, and not a rewritten row.
 
-Pause and resume behave as documented, and the emulator's mock provider makes the proof exact: with
-three fixes fed before a pause, **six during it** and more after, `/track` shows the three in one
-segment, the post-resume points in the next, and nothing whatsoever from the paused window. `recording`
-stays `true` throughout while `paused` flips, the log reads `paused at 42 points` then
-`resumed into segment 23`, and the notification title changes from *Recording track* to *Recording
-paused* with two actions in both states. The app's own button was driven by `uiautomator`: tapping it
-takes the screen to *Paused*/**RESUME** and back, in step with what the API reports.
-
 A `START_STICKY` restart is the break nothing else would record, so it was forced — `run-as kill -9` on
 the recording process, since `am kill` will not touch a foreground service. The system restarted the
 service, which came back at `tracking started in segment 22, 41 points stored`, one segment on from the
@@ -535,7 +554,7 @@ callback fires at all is what the emulator can show; a non-zero count needs real
 
 The minified release APK was checked last, since the positional encoding is the thing R8 could quietly
 break. It installs as `versionName=0.6` with `PackageSignatures{version:3}`, serves the full
-fifteen-field header, records across a pause into a new segment, computes `altMsl`, and returns
+fifteen-field header, records across a break into a new segment, computes `altMsl`, and returns
 `"priority":"high"` and `"src":"fused"` intact — the enum `id` and the field names surviving shrinking is
 exactly what writing them out literally is for. `checkApiDocs` was extended to cover the point fields
 too, and was confirmed to fail both when a documented row is removed and when API.md invents a field
@@ -547,3 +566,38 @@ provider answers, so the cadence each priority actually produces still needs rea
 -r` twice left Play services not delivering to the freshly replaced process for one recording attempt;
 it recovered on the next start, and it is worth knowing that a zero-point recording immediately after an
 update may be that rather than a bug.
+
+0.8 was verified on the same API 36 emulator, as a debug build and then as the signed, minified
+release APK, with the app kept in the background — the launcher on top and the recorder's process at
+oom adj 700 — for every HTTP call, since that is the situation the whole change is about.
+
+**The exemption is a real gate now, and it is refused before a page is misled rather than after.**
+With location, background location and notifications all granted but the exemption revoked, `/status`
+answers `"batteryExempt":false` and `"canRecord":false`, and `POST /start` answers `403` with
+`"error":"setup incomplete"` in the same body that names the missing item. Granting it flips both to
+true, and the same `POST /start` then answers `200` with `"recording":true` from the background —
+`tracking started in segment 1` — which is the `409` the old build risked, gone. A stop and a start
+over HTTP with the app still backgrounded are both `200`, and the second start opens `segment 2` with
+the four fixes fed during the stopped window absent: 13 points before, 13 after, then the new segment.
+
+The gate is on starting and not on a recording already under way, which the split between
+`Setup.canRecord` and `Setup.canKeepRecording` is for. Revoking the exemption mid-recording leaves
+`"recording":true` and the points still arriving while `POST /start` turns to `403`; killing the
+process with `run-as kill -9` then had the service come back at `tracking started in segment 3, 30
+points stored` rather than stopping. Ending a live track over a setting changed while it ran would
+have lost it.
+
+Pause and resume are gone: `POST /pause` and `POST /resume` answer `404 no such endpoint` on both
+builds, `/status` and the `status` event carry no `paused` key, and the notification reports
+`actions=1` with the title *Recording track*. The app's own screen has no pause button, and the
+`checkApiDocs` count fell from 7 endpoints to 5 with the status fields at 27.
+
+The checklist shows the battery row as blocking: red ✗, *Required*, and **START** disabled with all
+three location and notification items ✓. A `freemap-gps-recorder://start` link fired with the exemption
+outstanding no longer starts — it echoes `portEcho` and opens that row's explanation instead — and
+granting it from the dialog it raises fulfils the pending link on the way back, `tracking started in
+segment 4`, with focus handed to the launcher again.
+
+The minified release APK behaves identically, which is the thing worth checking: `"priority":"high"`,
+`"src":"fused"` and the fifteen-field header all survive R8, and start/stop/start/stop from the
+background are `200` throughout.

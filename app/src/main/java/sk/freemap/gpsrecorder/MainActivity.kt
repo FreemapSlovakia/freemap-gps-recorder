@@ -98,6 +98,11 @@ class MainActivity : Activity() {
         super.onNewIntent(intent)
         // singleTask: a link arriving while the app is already up is delivered here, not to onCreate.
         setIntent(intent)
+        // Reaching here at all means the task predates this intent, so it is not the throwaway a
+        // link creates and [dismiss] must not take it away. Worth saying explicitly because
+        // `setIntent` leaves the link on the activity: a later recreation reads it back, and without
+        // this the flag would outlive the one launch it describes.
+        openedByLink = false
         handleLink(intent)
     }
 
@@ -490,10 +495,15 @@ class MainActivity : Activity() {
      * Hands focus back to whoever opened the link. Finishing is right when the link created this
      * task; when the app was already open behind the browser, moving the task back returns focus
      * without tearing down the screen the user left behind.
+     *
+     * It has to be [finishAndRemoveTask], not `finish()`. Under `singleTask` this activity is its
+     * task's only member, so finishing the root leaves the task itself in Recents — a white entry
+     * that resumes to the homescreen and cannot be switched back to. A link-created task exists
+     * only to hand focus back, so there is nothing in it to keep.
      */
     private fun dismiss() {
         returnAfterStart = false
-        if (openedByLink && isTaskRoot) finish() else moveTaskToBack(true)
+        if (openedByLink && isTaskRoot) finishAndRemoveTask() else moveTaskToBack(true)
     }
 
     private fun toast(res: Int) = Toast.makeText(this, res, Toast.LENGTH_LONG).show()

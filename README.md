@@ -438,6 +438,16 @@ came back as `portEcho`, and a mismatched port was logged rather than acted on. 
 which makes the battery exemption part of `canRecord` — a link fired without it now opens the battery
 row rather than starting, which is the 0.8 paragraph below.
 
+"No activity was left behind" was not the same as no *task* left behind, which 0.9 still got wrong.
+Under `singleTask` this activity is its task's only member, so `finish()` on the root took the
+activity and left the task: on the emulator the published 0.9 answers a link with
+`Recent #1: Task{…sk.freemap.gpsrecorder}` whose `Activities=[]` — the white entry that resumes to
+the homescreen and cannot be switched back to. With `finishAndRemoveTask()` the same link leaves
+`dumpsys activity recents` with no task of ours at all, the launcher resumed. The recording is
+untouched by the removal, which is the assumption worth stating out loud, since `RecordingService`
+overrides neither `onTaskRemoved` nor `android:stopWithTask`: through the task going away `seq`
+climbed 1 → 11 without a gap, `isForeground=true types=0x8` and the notification stayed up.
+
 The setup checklist was walked end to end on an API 36 emulator, since MIUI refuses `INJECT_EVENTS`
 over adb and the phone cannot be driven by script:
 
